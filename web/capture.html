@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>SensePro+ — classroom capture</title>
+<style>
+  :root{--ink:#15202E;--a:#1D4ED8;--muted:#5C6B7E;--line:#D9DFE9;--ok:#166534}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0F1722;color:#E8EEF7;display:flex;flex-direction:column;align-items:center;min-height:100vh;padding:18px}
+  h1{font-size:18px;font-weight:700;margin-bottom:4px}
+  .sub{color:#8FA3BC;font-size:12.5px;margin-bottom:14px;font-family:ui-monospace,Menlo,monospace}
+  .stage{position:relative;width:640px;max-width:100%;border:1px solid #2A3A4F;border-radius:12px;overflow:hidden;background:#000}
+  video,canvas{display:block;width:100%}
+  canvas.overlay{position:absolute;inset:0;pointer-events:none}
+  .bar{display:flex;gap:8px;align-items:center;margin:14px 0;flex-wrap:wrap;justify-content:center}
+  button{font-family:ui-monospace,Menlo,monospace;font-size:13px;border:1px solid var(--a);background:var(--a);color:#fff;padding:9px 16px;border-radius:8px;cursor:pointer}
+  button.ghost{background:transparent;color:#9BC0FF}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  .cfg{display:flex;gap:8px;align-items:center;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#8FA3BC}
+  input{font-family:ui-monospace,Menlo,monospace;background:#16202E;border:1px solid #2A3A4F;color:#E8EEF7;border-radius:6px;padding:6px 8px;font-size:12px}
+  .roster{width:640px;max-width:100%;margin-top:8px;background:#131C29;border:1px solid #2A3A4F;border-radius:12px;padding:12px 14px}
+  .roster h2{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#8FA3BC;font-family:ui-monospace,Menlo,monospace;margin-bottom:8px}
+  .pill{display:inline-block;font-family:ui-monospace,Menlo,monospace;font-size:12px;padding:4px 9px;border-radius:6px;margin:3px;border:1px solid #2A3A4F}
+  .pill.present{background:rgba(22,101,52,.25);border-color:#2E7D4F;color:#9FE3B6}
+  .note{color:#6F8197;font-size:11.5px;margin-top:10px;max-width:640px;text-align:center;line-height:1.5}
+</style>
+</head>
+<body>
+  <h1>SensePro+ · Classroom Capture</h1>
+  <div class="sub">browser camera → WebSocket → server inference → live roster</div>
+
+  <div class="cfg bar">
+    <label>server <input id="url" value="ws://localhost:8000/ws/capture" size="30"/></label>
+    <label>fps <input id="fps" value="2" size="2"/></label>
+    <label>width <input id="w" value="480" size="4"/></label>
+  </div>
+
+  <div class="stage">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="overlay" class="overlay"></canvas>
+  </div>
+
+  <div class="bar">
+    <button id="start">Start camera + session</button>
+    <button id="stop" class="ghost" disabled>End session</button>
+    <span id="status" class="sub"></span>
+  </div>
+
+  <div class="roster">
+    <h2>Present now</h2>
+    <div id="present"><span class="sub">— no one yet —</span></div>
+  </div>
+  <p class="note">Frames are downscaled and sent to your backend for recognition; they are processed in memory and never stored. Grant camera permission when prompted. For a model-free trial, run the backend with VISION_BACKEND=stub and hold up a solid-coloured card.</p>
+
+<script>
+let ws, stream, timer, sending=false, t0=Date.now();
+const $=id=>document.getElementById(id);
+const video=$("video"), overlay=$("overlay"), octx=overlay.getContext("2d");
+const cap=document.createElement("canvas"), cctx=cap.getContext("2d");
+
+function setStatus(s){ $("status").textContent=s; }
+
+async function start(){
+  const targetW=parseInt($("w").value)||480;
+  stream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280}},audio:false});
+  video.srcObject=stream;
+  await video.play();
+  const ar=video.videoHeight/video.videoWidth;
+  cap.width=targetW; cap.height=Math.round(targetW*ar);
+  overlay.width=video.videoWidth; overlay.height=video.videoHeight;
+
+  ws=new WebSocket($("url").value);
+  ws.onopen=()=>{ setStatus("● live"); loop(); };
+  ws.onmessage=e=>handle(JSON.parse(e.data));
+  ws.onclose=()=>setStatus("○ closed");
+  ws.onerror=()=>setStatus("✕ ws error — is the backend running?");
+  $("start").disabled=true; $("stop").disabled=false;
+}
+
+function loop(){
+  const fps=parseFloat($("fps").value)||2;
+  timer=setInterval(()=>{
+    if(!ws||ws.readyState!==1||sending) return;
+    cctx.drawImage(video,0,0,cap.width,cap.height);
+    const jpg=cap.toDataURL("image/jpeg",0.6).split(",")[1];
+    sending=true;
+    ws.send(JSON.stringify({type:"frame",ts:(Date.now()-t0)/1000,jpg_b64:jpg}));
+  },1000/fps);
+}
+
+function handle(msg){
+  if(msg.type==="result"){
+    sending=false;
+    drawBoxes(msg.faces||[]);
+    renderPresent(msg.present||[]);
+  } else if(msg.type==="error"){ sending=false; }
+  else if(msg.type==="session_ended"){ setStatus("session ended"); }
+}
+
+function drawBoxes(faces){
+  const sx=overlay.width/cap.width, sy=overlay.height/cap.height;
+  octx.clearRect(0,0,overlay.width,overlay.height);
+  octx.lineWidth=2; octx.font="14px ui-monospace,Menlo,monospace";
+  faces.forEach(f=>{
+    const [x1,y1,x2,y2]=f.box;
+    const named=!!f.student_id;
+    octx.strokeStyle=named?"#34D399":"#FBBF24";
+    octx.strokeRect(x1*sx,y1*sy,(x2-x1)*sx,(y2-y1)*sy);
+    const label=named?`${f.student_id} ${f.score}`:`#${f.track_id}`;
+    octx.fillStyle=named?"#34D399":"#FBBF24";
+    octx.fillText(label, x1*sx, Math.max(14,y1*sy-5));
+  });
+}
+
+function renderPresent(ids){
+  $("present").innerHTML = ids.length
+    ? ids.map(id=>`<span class="pill present">${id}</span>`).join("")
+    : '<span class="sub">— no one yet —</span>';
+}
+
+function stop(){
+  if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:"end",ts:(Date.now()-t0)/1000}));
+  clearInterval(timer);
+  if(stream) stream.getTracks().forEach(t=>t.stop());
+  $("start").disabled=false; $("stop").disabled=true;
+}
+
+$("start").onclick=start; $("stop").onclick=stop;
+</script>
+</body>
+</html>
