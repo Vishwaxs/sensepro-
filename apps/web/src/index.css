@@ -1,0 +1,144 @@
+@import "tailwindcss";
+
+/* ------------------------------------------------------------------ */
+/* SensePro+ "Command Center" tokens — docs/design-system.md, verbatim */
+/* ------------------------------------------------------------------ */
+@theme {
+  --color-bg: #0b1120;
+  --color-surface: #111a2e;
+  --color-surface-2: #16213b;
+  --color-line: #22304d;
+  --color-ink: #e8eef7;
+  --color-muted: #8094b0;
+  --color-primary: #3b82f6;
+  --color-primary-deep: #1d4ed8;
+  --color-accent: #22d3ee;
+  --color-ok: #34d399;
+  --color-warn: #fbbf24;
+  --color-bad: #f87171;
+
+  --font-display: "Archivo", system-ui, sans-serif;
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+
+  --radius-panel: 14px;
+
+  --animate-pulse-dot: pulse-dot 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-glow-drift: glow-drift 24s ease-in-out infinite alternate;
+
+  @keyframes pulse-dot {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.35;
+    }
+  }
+  @keyframes glow-drift {
+    from {
+      transform: translate(-4%, -4%) scale(1);
+    }
+    to {
+      transform: translate(4%, 5%) scale(1.12);
+    }
+  }
+}
+
+/* Base ------------------------------------------------------------- */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Faint 32px dot-grid over --bg (design-system background spec) */
+.bg-grid {
+  background-image: radial-gradient(circle, rgba(232, 238, 247, 0.05) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+/* One slow cobalt radial glow, top-left */
+.bg-glow::before {
+  content: "";
+  position: fixed;
+  top: -20%;
+  left: -12%;
+  width: 60vw;
+  height: 60vw;
+  pointer-events: none;
+  background: radial-gradient(circle, rgba(29, 78, 216, 0.16) 0%, transparent 62%);
+  animation: var(--animate-glow-drift);
+  z-index: 0;
+}
+
+/* Glassy panel: surface @ ~92% + 1px line, 14px radius, soft shadow */
+.panel {
+  background-color: color-mix(in srgb, var(--color-surface) 92%, transparent);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(8px);
+}
+
+/* Visible focus rings everywhere (AA requirement) */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* Keyboard focus on an SVG bar: SVG outline rendering is unreliable, so the
+   focus ring is a stroked rect toggled on :focus-visible. */
+.chart-bar {
+  outline: none;
+  cursor: default;
+}
+.chart-bar__focus {
+  stroke: none;
+}
+.chart-bar:focus-visible .chart-bar__focus {
+  stroke: var(--color-primary);
+  stroke-width: 2;
+}
+
+/* Visually hidden but readable by assistive tech */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Recessive scrollbars for the console look */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line) transparent;
+}
+
+::selection {
+  background: rgba(59, 130, 246, 0.35);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
