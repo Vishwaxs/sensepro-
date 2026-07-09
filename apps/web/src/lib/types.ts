@@ -5,32 +5,39 @@ export type Role = "teacher" | "management" | "admin" | "student";
 
 export type PresenceState = "PRESENT" | "UNVERIFIED" | "ABSENT";
 
+/** Zone enum follows the DB schema (supabase/migrations/0001_init.sql) and
+ *  packages/contracts/openapi.yaml as authoritative — not "middle"/"attendance". */
+export type Zone = "front" | "mid" | "back";
+export type SessionMode = "lecture" | "exam" | "workshop";
+
 export interface Student {
-  student_id: string;
-  name: string;
+  id: string;
+  reg_no: string;
+  full_name: string;
   class_section: string;
-  consent_signed: boolean;
+  seat_zone?: Zone;
 }
 
 export interface Session {
-  session_id: string;
+  id: string;
   class_section: string;
-  subject: string;
-  mode: "attendance" | "exam";
+  subject: string | null;
+  mode: SessionMode;
+  starts_at: string;
+  ends_at: string | null;
+}
+
+export interface PresenceInterval {
+  session_id: string;
+  student_id: string;
+  state: PresenceState;
   started_at: string;
   ended_at: string | null;
 }
 
-export interface PresenceInterval {
-  student_id: string;
-  state: PresenceState;
-  started_at: number;
-  ended_at: number | null;
-}
-
 export interface RosterEntry {
   student_id: string;
-  name: string;
+  full_name: string;
   state: PresenceState;
   last_seen_ts: number | null;
   present_seconds: number;
@@ -78,7 +85,7 @@ export type ServerMessage = ResultMessage | ErrorMessage | SessionEndedMessage;
 /* ---------------- Aggregate-only engagement (invariant: no per-student) --- */
 
 export interface ZoneAggregate {
-  zone: "front" | "middle" | "back";
+  zone: Zone;
   /** naive mean visibility-weighted engagement (biased toward the front) */
   naive_mean: number;
   /** Visibility-Normalised Engagement Index */

@@ -14,44 +14,44 @@ export const MOCK_SECTION = "MCA-3A";
 export const MOCK_SUBJECT = "Distributed Systems";
 
 export const mockRoster: RosterEntry[] = [
-  { student_id: "s2547201", name: "Aarav Menon", state: "PRESENT", last_seen_ts: 12, present_seconds: 2640 },
-  { student_id: "s2547204", name: "Diya Sharma", state: "PRESENT", last_seen_ts: 8, present_seconds: 2610 },
-  { student_id: "s2547209", name: "Ishaan Verma", state: "PRESENT", last_seen_ts: 21, present_seconds: 2455 },
-  { student_id: "s2547213", name: "Kavya Nair", state: "UNVERIFIED", last_seen_ts: 96, present_seconds: 2210 },
-  { student_id: "s2547218", name: "Mohammed Rafi", state: "PRESENT", last_seen_ts: 15, present_seconds: 2580 },
-  { student_id: "s2547222", name: "Nandini Rao", state: "PRESENT", last_seen_ts: 33, present_seconds: 2495 },
-  { student_id: "s2547226", name: "Pranav Iyer", state: "ABSENT", last_seen_ts: null, present_seconds: 0 },
-  { student_id: "s2547231", name: "Riya Kulkarni", state: "PRESENT", last_seen_ts: 5, present_seconds: 2655 },
-  { student_id: "s2547235", name: "Siddharth Bose", state: "UNVERIFIED", last_seen_ts: 132, present_seconds: 1980 },
-  { student_id: "s2547240", name: "Tanvi Deshpande", state: "PRESENT", last_seen_ts: 18, present_seconds: 2520 },
-  { student_id: "s2547244", name: "Vihaan Reddy", state: "PRESENT", last_seen_ts: 27, present_seconds: 2470 },
-  { student_id: "s2547249", name: "Zara Khan", state: "ABSENT", last_seen_ts: null, present_seconds: 340 },
+  { student_id: "s2547201", full_name: "Aarav Menon", state: "PRESENT", last_seen_ts: 12, present_seconds: 2640 },
+  { student_id: "s2547204", full_name: "Diya Sharma", state: "PRESENT", last_seen_ts: 8, present_seconds: 2610 },
+  { student_id: "s2547209", full_name: "Ishaan Verma", state: "PRESENT", last_seen_ts: 21, present_seconds: 2455 },
+  { student_id: "s2547213", full_name: "Kavya Nair", state: "UNVERIFIED", last_seen_ts: 96, present_seconds: 2210 },
+  { student_id: "s2547218", full_name: "Mohammed Rafi", state: "PRESENT", last_seen_ts: 15, present_seconds: 2580 },
+  { student_id: "s2547222", full_name: "Nandini Rao", state: "PRESENT", last_seen_ts: 33, present_seconds: 2495 },
+  { student_id: "s2547226", full_name: "Pranav Iyer", state: "ABSENT", last_seen_ts: null, present_seconds: 0 },
+  { student_id: "s2547231", full_name: "Riya Kulkarni", state: "PRESENT", last_seen_ts: 5, present_seconds: 2655 },
+  { student_id: "s2547235", full_name: "Siddharth Bose", state: "UNVERIFIED", last_seen_ts: 132, present_seconds: 1980 },
+  { student_id: "s2547240", full_name: "Tanvi Deshpande", state: "PRESENT", last_seen_ts: 18, present_seconds: 2520 },
+  { student_id: "s2547244", full_name: "Vihaan Reddy", state: "PRESENT", last_seen_ts: 27, present_seconds: 2470 },
+  { student_id: "s2547249", full_name: "Zara Khan", state: "ABSENT", last_seen_ts: null, present_seconds: 340 },
 ];
 
 export const mockSessions: Session[] = [
   {
-    session_id: "ses_0412",
+    id: "ses_0412",
     class_section: MOCK_SECTION,
     subject: MOCK_SUBJECT,
-    mode: "attendance",
-    started_at: "2026-07-01T09:00:00+05:30",
-    ended_at: null,
+    mode: "lecture",
+    starts_at: "2026-07-01T09:00:00+05:30",
+    ends_at: null,
   },
   {
-    session_id: "ses_0411",
+    id: "ses_0411",
     class_section: MOCK_SECTION,
     subject: "Machine Learning",
-    mode: "attendance",
-    started_at: "2026-06-30T11:00:00+05:30",
-    ended_at: "2026-06-30T11:55:00+05:30",
+    mode: "lecture",
+    starts_at: "2026-06-30T11:00:00+05:30",
+    ends_at: "2026-06-30T11:55:00+05:30",
   },
   {
-    session_id: "ses_0410",
+    id: "ses_0410",
     class_section: MOCK_SECTION,
     subject: "Distributed Systems",
     mode: "exam",
-    started_at: "2026-06-28T14:00:00+05:30",
-    ended_at: "2026-06-28T16:00:00+05:30",
+    starts_at: "2026-06-28T14:00:00+05:30",
+    ends_at: "2026-06-28T16:00:00+05:30",
   },
 ];
 
@@ -60,7 +60,7 @@ export const mockSessions: Session[] = [
  *  VNEI re-weights by per-zone visibility so every seat counts equally. */
 export const mockZones: ZoneAggregate[] = [
   { zone: "front", naive_mean: 0.82, vnei: 0.71, n_visible: 14, suppressed: false },
-  { zone: "middle", naive_mean: 0.58, vnei: 0.66, n_visible: 19, suppressed: false },
+  { zone: "mid", naive_mean: 0.58, vnei: 0.66, n_visible: 19, suppressed: false },
   { zone: "back", naive_mean: 0.31, vnei: 0.6, n_visible: 9, suppressed: false },
 ];
 
@@ -74,7 +74,7 @@ export const mockCaptureClients: CaptureClient[] = [
  *  do not appear in the roster above. */
 export const mockConsent: ConsentRecord[] = mockRoster.map((r) => ({
   student_id: r.student_id,
-  name: r.name,
+  name: r.full_name,
   signed: true,
   signed_on: "2026-06-24",
 }));

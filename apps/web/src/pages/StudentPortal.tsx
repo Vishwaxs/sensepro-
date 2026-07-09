@@ -61,7 +61,7 @@ export function StudentPortal() {
                 </thead>
                 <tbody>
                   {myAttendance.map(({ session, present_seconds }) => (
-                    <tr key={session.session_id} className="border-b border-line/60 last:border-0">
+                    <tr key={session.id} className="border-b border-line/60 last:border-0">
                       <td className="px-5 py-3">
                         <div className="font-medium text-ink">{session.subject}</div>
                         <div className="font-mono text-[11.5px] text-muted">
@@ -69,7 +69,7 @@ export function StudentPortal() {
                         </div>
                       </td>
                       <td className="px-4 py-3 font-mono text-[12px] text-muted">
-                        {new Date(session.started_at).toLocaleDateString("en-IN", {
+                        {new Date(session.starts_at).toLocaleDateString("en-IN", {
                           day: "2-digit",
                           month: "short",
                         })}

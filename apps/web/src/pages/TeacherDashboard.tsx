@@ -28,7 +28,7 @@ export function TeacherDashboard() {
     const q = query.trim().toLowerCase();
     if (!q) return mockRoster;
     return mockRoster.filter(
-      (r) => r.name.toLowerCase().includes(q) || r.student_id.toLowerCase().includes(q),
+      (r) => r.full_name.toLowerCase().includes(q) || r.student_id.toLowerCase().includes(q),
     );
   }, [query]);
 
@@ -118,9 +118,9 @@ export function TeacherDashboard() {
                             )}
                             aria-hidden="true"
                           >
-                            {initials(r.name)}
+                            {initials(r.full_name)}
                           </span>
-                          <span className="font-medium text-ink">{r.name}</span>
+                          <span className="font-medium text-ink">{r.full_name}</span>
                         </div>
                       </td>
                       <td className="px-4 py-3 font-mono text-muted">{r.student_id}</td>
