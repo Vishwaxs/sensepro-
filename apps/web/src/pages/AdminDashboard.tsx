@@ -100,7 +100,7 @@ export function AdminDashboard() {
                       <td className="px-5 py-3 font-medium text-ink">{u.name}</td>
                       <td className="px-4 py-3 font-mono text-muted">{u.user}</td>
                       <td className="px-5 py-3">
-                        <Badge tone={u.role === "admin" ? "accent" : "muted"}>{u.role}</Badge>
+                        <Badge tone={u.role === "management" ? "accent" : "muted"}>{u.role}</Badge>
                       </td>
                     </tr>
                   ))}
