@@ -36,6 +36,21 @@ pip install -e ".[insightface]"            # SCRFD + ArcFace (buffalo_l)
 VISION_BACKEND=insightface uvicorn app.main:app --port 8000
 ```
 
+## Full stack (Phase 2 — persistence, auth, live roster)
+```bash
+# Backend: copy backend/.env.example -> backend/.env, set SUPABASE_URL +
+# SUPABASE_SECRET_KEY (server key; leave blank to run offline with a no-op writer)
+cd backend && uvicorn app.main:app --reload --port 8000
+
+# Frontend: copy apps/web/.env.example -> apps/web/.env.local, set
+# VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY (anon key only, never the secret)
+cd apps/web && npm install && npm run dev     # http://localhost:5173
+```
+Flow: sign in (roles come from the JWT via the access-token hook, migration 0003) →
+`POST /v1/sessions` starts a class session → `/capture?session_id=...` streams frames and the
+backend persists presence intervals → the teacher roster updates live over Supabase Realtime →
+Export PDF. Reads go browser→Postgres under RLS; the backend only writes (ADR 0004/0006).
+
 ## Next (per the PRD)
-Supabase persistence of presence + auth/RLS roles + the four dashboards (Week 2); proctor mode +
-VNEI engagement aggregation (Week 3). See `docs/SensePro_PRD_v1.md` and `CLAUDE.md`.
+Proctor mode + VNEI engagement aggregation + management/admin live data (Week 3).
+See `docs/SensePro_PRD_v1.md` and `CLAUDE.md`.
