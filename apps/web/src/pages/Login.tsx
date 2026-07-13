@@ -2,40 +2,46 @@ import { useState } from "react";
 import type { FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { GaugeCircle, ScanFace, ShieldCheck, UserRound } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
-import { ROLE_HOME, useAuth } from "@/lib/auth";
-import type { Role } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { ScanFace } from "lucide-react";
+import { decodeJwtPayload, ROLE_HOME } from "@/lib/auth";
+import { supabase } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
-const ROLES: { role: Role; label: string; icon: LucideIcon }[] = [
-  { role: "teacher", label: "Teacher", icon: ScanFace },
-  { role: "management", label: "Management", icon: GaugeCircle },
-  { role: "admin", label: "Admin", icon: ShieldCheck },
-  { role: "student", label: "Student", icon: UserRound },
-];
-
 export function Login() {
-  const { signIn } = useAuth();
   const navigate = useNavigate();
-  const [role, setRole] = useState<Role>("teacher");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
-  /* Handler only — no HTML form post (design-system rule). Real Supabase
-     Auth replaces this stub in Week 2. */
-  const handleSubmit = (e: FormEvent) => {
+  /* Handler only — no HTML form post (design-system rule). Real Supabase Auth;
+     the role comes back on the JWT (see lib/auth.tsx), not a client choice. */
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!email.trim() || !password.trim()) {
       setError("Enter your email and password to continue.");
       return;
     }
     setError(null);
-    signIn({ name: email.split("@")[0] || "User", email: email.trim(), role });
-    navigate(ROLE_HOME[role]);
+    setSubmitting(true);
+    const { data, error: signInError } = await supabase.auth.signInWithPassword({
+      email: email.trim(),
+      password,
+    });
+    setSubmitting(false);
+    if (signInError) {
+      setError(signInError.message);
+      return;
+    }
+    const claims = data.session ? decodeJwtPayload(data.session.access_token) : {};
+    const role = claims.app_role as keyof typeof ROLE_HOME | undefined;
+    navigate(role ? ROLE_HOME[role] : "/login");
+    if (!role) {
+      setError(
+        "Signed in, but no role is attached to this account yet. Contact an administrator.",
+      );
+    }
   };
 
   return (
@@ -57,33 +63,6 @@ export function Login() {
         </div>
 
         <form onSubmit={handleSubmit} noValidate>
-          <fieldset className="mb-4">
-            <legend className="mb-1.5 text-[13px] font-medium text-ink">Sign in as</legend>
-            {/* Toggle-button group (aria-pressed) rather than an ARIA
-                radiogroup: each is an independent Tab stop, so no arrow-key
-                roving-tabindex contract is implied. */}
-            <div className="grid grid-cols-2 gap-2" role="group" aria-label="Role">
-              {ROLES.map(({ role: r, label, icon: Icon }) => (
-                <button
-                  key={r}
-                  type="button"
-                  aria-pressed={role === r}
-                  onClick={() => setRole(r)}
-                  className={cn(
-                    "flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-lg border text-[13px] font-medium",
-                    "transition-colors duration-150",
-                    role === r
-                      ? "border-primary/50 bg-primary/15 text-ink"
-                      : "border-line bg-surface-2 text-muted hover:border-muted/50 hover:text-ink",
-                  )}
-                >
-                  <Icon className="size-4" aria-hidden="true" />
-                  {label}
-                </button>
-              ))}
-            </div>
-          </fieldset>
-
           <div className="flex flex-col gap-3.5">
             <Input
               label="Email"
@@ -109,8 +88,8 @@ export function Login() {
             </p>
           )}
 
-          <Button type="submit" size="lg" className="mt-5 w-full">
-            Sign in
+          <Button type="submit" size="lg" className="mt-5 w-full" disabled={submitting}>
+            {submitting ? "Signing in…" : "Sign in"}
           </Button>
         </form>
 

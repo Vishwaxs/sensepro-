@@ -77,14 +77,17 @@ function Brand() {
 }
 
 export function AppShell() {
-  const { user, signOut } = useAuth();
+  const { user, loading, signOut } = useAuth();
   const navigate = useNavigate();
   const [drawerOpen, setDrawerOpen] = useState(false);
 
+  // RequireRole already gates each nested route; this is the fallback for
+  // any route mounted directly under AppShell without its own guard.
+  if (loading) return null;
   if (!user) return <Navigate to="/login" replace />;
 
-  const handleSignOut = () => {
-    signOut();
+  const handleSignOut = async () => {
+    await signOut();
     navigate("/login");
   };
 
@@ -179,7 +182,8 @@ export function AppShell() {
 }
 
 export function RoleRedirect() {
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
+  if (loading) return null;
   if (!user) return <Navigate to="/login" replace />;
   return <Navigate to={ROLE_HOME[user.role]} replace />;
 }
