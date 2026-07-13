@@ -1,8 +1,27 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Camera, Flag, Percent, ScanFace, Search, Users, UsersRound } from "lucide-react";
-import { MOCK_SECTION, MOCK_SUBJECT, mockRoster } from "@/lib/mock";
+import {
+  Camera,
+  FileDown,
+  Flag,
+  Percent,
+  ScanFace,
+  Search,
+  Users,
+  UsersRound,
+  WifiOff,
+} from "lucide-react";
+import {
+  deriveRoster,
+  fetchActiveSession,
+  fetchIntervals,
+  fetchStudents,
+  subscribePresence,
+} from "@/lib/data/roster";
+import type { ActiveSession, IntervalRow } from "@/lib/data/roster";
+import { exportSessionPdf } from "@/lib/data/report";
+import type { RosterEntry } from "@/lib/types";
 import { cn, fmtDuration, initials } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader } from "@/components/ui/card";
@@ -17,32 +36,105 @@ const rise = {
   animate: { opacity: 1, y: 0 },
 };
 
+type LoadState = "loading" | "ready" | "error";
+
 export function TeacherDashboard() {
   const [query, setQuery] = useState("");
+  const [load, setLoad] = useState<LoadState>("loading");
+  const [session, setSession] = useState<ActiveSession | null>(null);
+  const [roster, setRoster] = useState<RosterEntry[]>([]);
+  const [realtimeLive, setRealtimeLive] = useState(false);
+  const studentsRef = useRef<Awaited<ReturnType<typeof fetchStudents>>>([]);
+  const intervalsRef = useRef<Map<string, IntervalRow>>(new Map());
 
-  const presentCount = mockRoster.filter((r) => r.state === "PRESENT").length;
-  const avgAttendance =
-    (mockRoster.filter((r) => r.state !== "ABSENT").length / mockRoster.length) * 100;
+  const rederive = useCallback(() => {
+    setRoster(deriveRoster(studentsRef.current, [...intervalsRef.current.values()]));
+  }, []);
+
+  /* Initial load: students + active session + its intervals — direct RLS
+     reads, no backend endpoint. */
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [students, active] = await Promise.all([fetchStudents(), fetchActiveSession()]);
+        if (cancelled) return;
+        studentsRef.current = students;
+        setSession(active);
+        if (active) {
+          const intervals = await fetchIntervals(active.id);
+          if (cancelled) return;
+          intervalsRef.current = new Map(intervals.map((iv) => [iv.id, iv]));
+        }
+        rederive();
+        setLoad("ready");
+      } catch {
+        if (!cancelled) setLoad("error");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [rederive]);
+
+  /* Realtime: apply inserts/updates for the active session as they land.
+     On drop the stale watermark shows; the channel auto-rejoins. */
+  useEffect(() => {
+    if (!session) return;
+    const unsubscribe = subscribePresence(
+      session.id,
+      (row) => {
+        intervalsRef.current.set(row.id, row);
+        rederive();
+      },
+      setRealtimeLive,
+    );
+    return unsubscribe;
+  }, [session, rederive]);
+
+  const presentCount = roster.filter((r) => r.state === "PRESENT").length;
+  const avgAttendance = roster.length
+    ? (roster.filter((r) => r.state !== "ABSENT").length / roster.length) * 100
+    : 0;
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return mockRoster;
-    return mockRoster.filter(
+    if (!q) return roster;
+    return roster.filter(
       (r) => r.full_name.toLowerCase().includes(q) || r.student_id.toLowerCase().includes(q),
     );
-  }, [query]);
+  }, [query, roster]);
+
+  const subtitle = session
+    ? `${session.class_section}${session.subject ? " · " + session.subject : ""} — live session`
+    : "No live session — roster shows the enrolled class";
 
   return (
     <div>
       <PageHeader
         title="Teacher console"
-        subtitle={`${MOCK_SECTION} · ${MOCK_SUBJECT} — live session`}
+        subtitle={subtitle}
         action={
-          <Link to="/capture">
-            <Button>
-              <Camera className="size-4" aria-hidden="true" /> Open capture kiosk
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              onClick={() =>
+                void exportSessionPdf({
+                  section: session?.class_section ?? "MCA-4B",
+                  subject: session?.subject ?? null,
+                  roster,
+                })
+              }
+              disabled={roster.length === 0}
+            >
+              <FileDown className="size-4" aria-hidden="true" /> Export PDF
             </Button>
-          </Link>
+            <Link to="/capture">
+              <Button>
+                <Camera className="size-4" aria-hidden="true" /> Open capture kiosk
+              </Button>
+            </Link>
+          </div>
         }
       />
 
@@ -53,7 +145,7 @@ export function TeacherDashboard() {
         className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"
       >
         <StatCard label="Present" value={presentCount} icon={Users} tone="ok" note="recognised in the last re-ID pass" />
-        <StatCard label="Total roster" value={mockRoster.length} icon={UsersRound} note="enrolled with signed consent" />
+        <StatCard label="Total roster" value={roster.length} icon={UsersRound} note="enrolled with signed consent" />
         <StatCard label="Avg attendance" value={avgAttendance} decimals={0} suffix="%" icon={Percent} note="this session so far" />
         <StatCard label="Flags" value={0} icon={Flag} tone="warn" note="proctor queue — human review only" />
       </motion.div>
@@ -63,11 +155,17 @@ export function TeacherDashboard() {
         <Card className="mt-6">
           <CardHeader
             title="Live roster"
-            hint="Presence updates on every re-identification pass."
+            hint="Presence updates arrive over Supabase Realtime — no polling."
             action={
-              <div className="flex items-center gap-2 font-mono text-[11.5px] text-muted">
-                <LiveDot /> live
-              </div>
+              session && realtimeLive ? (
+                <div className="flex items-center gap-2 font-mono text-[11.5px] text-muted">
+                  <LiveDot /> live
+                </div>
+              ) : session ? (
+                <div className="flex items-center gap-2 font-mono text-[11.5px] text-warn">
+                  <WifiOff className="size-3.5" aria-hidden="true" /> reconnecting — data may be stale
+                </div>
+              ) : null
             }
           />
           <div className="border-t border-line px-5 py-3">
@@ -86,7 +184,17 @@ export function TeacherDashboard() {
             </div>
           </div>
 
-          {filtered.length === 0 ? (
+          {load === "loading" ? (
+            <p className="px-5 py-10 text-center font-mono text-[12.5px] text-muted">
+              loading roster…
+            </p>
+          ) : load === "error" ? (
+            <EmptyState
+              icon={WifiOff}
+              title="Could not load the roster"
+              hint="Check your connection and role, then reload. Reads go directly to the database under row-level security."
+            />
+          ) : filtered.length === 0 ? (
             <EmptyState
               icon={ScanFace}
               title="No students match"
