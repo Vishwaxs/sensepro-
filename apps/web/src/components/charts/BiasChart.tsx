@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { ZoneAggregate } from "@/lib/types";
+import type { ZoneAggregate } from "@/lib/data/types";
 
 /** Naive mean vs VNEI, grouped bars per classroom zone.
  *  Series palette validated (dataviz six-checks, dark surface #111A2E):
@@ -18,8 +18,8 @@ const PAD = { top: 26, right: 12, bottom: 28, left: 36 };
 const PLOT_W = VW - PAD.left - PAD.right;
 const PLOT_H = VH - PAD.top - PAD.bottom;
 const BAR_W = 34;
-const BAR_GAP = 2; // 2px surface gap between adjacent bars
-const CAP_R = 4; // rounded data-end radius
+const BAR_GAP = 2;
+const CAP_R = 4;
 
 function topRoundedBar(x: number, y: number, w: number, h: number): string {
   if (h <= CAP_R) return `M${x},${y + h} h${w} v${-h} h${-w} Z`;
@@ -42,10 +42,9 @@ export function BiasChart({ zones }: { zones: ZoneAggregate[] }) {
 
   return (
     <div>
-      {/* Legend — always present for two series */}
       <div className="mb-3 flex flex-wrap items-center gap-4">
         {SERIES.map((s) => (
-          <span key={s.key} className="flex items-center gap-2 text-[12.5px] text-muted">
+          <span key={s.key} className="flex items-center gap-2 text-[12.5px] text-[color:var(--muted)]">
             <span
               className="inline-block h-2.5 w-2.5 rounded-[3px]"
               style={{ backgroundColor: s.color }}
@@ -62,7 +61,6 @@ export function BiasChart({ zones }: { zones: ZoneAggregate[] }) {
         aria-label="Engagement by zone: naive mean versus visibility-normalised index"
         className="w-full"
       >
-        {/* Recessive gridlines + axis labels */}
         {[0, 0.25, 0.5, 0.75, 1].map((t) => (
           <g key={t}>
             <line
@@ -111,7 +109,6 @@ export function BiasChart({ zones }: { zones: ZoneAggregate[] }) {
                     onBlur={() => setHover(null)}
                     className="chart-bar"
                   >
-                    {/* Hit target wider than the mark; also carries the focus ring */}
                     <rect
                       className="chart-bar__focus"
                       x={bx - 4}
@@ -126,7 +123,6 @@ export function BiasChart({ zones }: { zones: ZoneAggregate[] }) {
                       fill={s.color}
                       opacity={isDim ? 0.45 : 1}
                     />
-                    {/* Direct value label — ink text, never series-colored */}
                     <text
                       x={bx + BAR_W / 2}
                       y={by - 6}
@@ -157,8 +153,7 @@ export function BiasChart({ zones }: { zones: ZoneAggregate[] }) {
         })}
       </svg>
 
-      {/* Hover readout (announced politely to screen readers) */}
-      <p className="mt-1 min-h-5 font-mono text-[11.5px] text-muted" aria-live="polite">
+      <p className="mt-1 min-h-5 font-mono-nums text-[11.5px] text-[color:var(--muted)]" aria-live="polite">
         {hover
           ? `${zones[hover.zi].zone} · ${SERIES[hover.si].label}: ${Math.round(
               zones[hover.zi][SERIES[hover.si].key] * 100,
@@ -166,23 +161,22 @@ export function BiasChart({ zones }: { zones: ZoneAggregate[] }) {
           : "hover or tab across the bars for exact values"}
       </p>
 
-      {/* Table view — identity never depends on the graphic alone */}
       <details className="mt-2">
-        <summary className="cursor-pointer font-mono text-[11px] tracking-wider text-muted uppercase select-none">
+        <summary className="cursor-pointer font-mono-nums text-[11px] uppercase tracking-wider text-[color:var(--muted)] select-none">
           View as table
         </summary>
         <table className="mt-2 w-full max-w-sm text-left text-[12.5px]">
           <thead>
-            <tr className="border-b border-line font-mono text-[10.5px] tracking-wider text-muted uppercase">
+            <tr className="border-b border-[color:var(--line)] font-mono-nums text-[10.5px] uppercase tracking-wider text-[color:var(--muted)]">
               <th scope="col" className="py-1.5 pr-3 font-medium">Zone</th>
               <th scope="col" className="py-1.5 pr-3 font-medium">Naive mean</th>
               <th scope="col" className="py-1.5 pr-3 font-medium">VNEI</th>
               <th scope="col" className="py-1.5 font-medium">n visible</th>
             </tr>
           </thead>
-          <tbody className="font-mono text-ink">
+          <tbody className="font-mono-nums text-[color:var(--ink)]">
             {zones.map((z) => (
-              <tr key={z.zone} className="border-b border-line/50 last:border-0">
+              <tr key={z.zone} className="border-b border-[color:var(--line)]/50 last:border-0">
                 <td className="py-1.5 pr-3 uppercase">{z.zone}</td>
                 <td className="py-1.5 pr-3">{Math.round(z.naive_mean * 100)}%</td>
                 <td className="py-1.5 pr-3">{Math.round(z.vnei * 100)}%</td>
