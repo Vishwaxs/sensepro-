@@ -53,6 +53,63 @@ class PresenceInterval:
         }
 
 
+@dataclass
+class ProctorFlagRow:
+    """One proctor_flags row: a candidate event for HUMAN review (Phase 3).
+    The DB status enum is pending/dismissed/upheld — 'pending' is what every
+    UI renders as "awaiting review"; only a reviewer changes it. No verdict
+    or score lives on this row."""
+
+    session_id: str
+    flag_type: str  # 'phone' | 'extra_person' | 'head_pose' | 'other' (DB CHECK)
+    flagged_at: datetime
+    student_id: str | None = None
+    review_status: str = "pending"
+    id: str = field(default_factory=lambda: str(uuid4()))
+
+    def payload(self) -> dict:
+        return {
+            "id": self.id,
+            "session_id": self.session_id,
+            "student_id": self.student_id,
+            "flag_type": self.flag_type,
+            "flagged_at": _iso(self.flagged_at),
+            "review_status": self.review_status,
+        }
+
+
+@dataclass
+class ZoneAggregateRow:
+    """One engagement_zone_aggregates row (Tier 2). Zone-level by design:
+    there is NO student or track identifier on this row, and none may ever
+    be added — that would break the k>=5 aggregate-only privacy tier."""
+
+    session_id: str
+    window_start: datetime
+    window_s: int
+    zone: str  # 'front' | 'mid' | 'back' | 'class' (DB CHECK)
+    n_tracked: int  # DB CHECK n_tracked >= 5; suppressed in code before that
+    enrolled_in_zone: int
+    coverage: float  # 0..1: distinct tracks seen / enrolled in the zone
+    vnei: float  # 0..1: visibility-normalised engagement index
+    signals: dict = field(default_factory=dict)  # rates only, e.g. phone_rate
+    id: str = field(default_factory=lambda: str(uuid4()))
+
+    def payload(self) -> dict:
+        return {
+            "id": self.id,
+            "session_id": self.session_id,
+            "window_start": _iso(self.window_start),
+            "window_s": self.window_s,
+            "zone": self.zone,
+            "n_tracked": self.n_tracked,
+            "enrolled_in_zone": self.enrolled_in_zone,
+            "coverage": self.coverage,
+            "vnei": self.vnei,
+            "signals": self.signals,
+        }
+
+
 class PresenceWriter(Protocol):
     def create_session(
         self, class_section: str, subject: str | None, mode: str
@@ -60,6 +117,8 @@ class PresenceWriter(Protocol):
     def end_session(self, session_id: str, ends_at: datetime) -> None: ...
     def open_interval(self, row: PresenceInterval) -> None: ...
     def close_interval(self, row: PresenceInterval) -> None: ...
+    def create_flag(self, row: ProctorFlagRow) -> None: ...
+    def create_zone_aggregate(self, row: ZoneAggregateRow) -> None: ...
 
 
 class NoopWriter:
@@ -79,6 +138,12 @@ class NoopWriter:
 
     def close_interval(self, row: PresenceInterval) -> None:
         logger.debug("noop close %s %s", row.student_id, row.state)
+
+    def create_flag(self, row: ProctorFlagRow) -> None:
+        logger.debug("noop flag %s %s", row.flag_type, row.student_id)
+
+    def create_zone_aggregate(self, row: ZoneAggregateRow) -> None:
+        logger.debug("noop zone aggregate %s vnei=%s", row.zone, row.vnei)
 
 
 class SupabaseWriter:
@@ -149,6 +214,24 @@ class SupabaseWriter:
             r.raise_for_status()
         except Exception as exc:  # noqa: BLE001
             logger.warning("presence close dropped: %s %s (%s)", row.student_id, row.state, exc)
+
+    def create_flag(self, row: ProctorFlagRow) -> None:
+        """Proctor flags are assistive review items — like presence, a lost
+        write is logged and dropped rather than stalling the capture loop."""
+        try:
+            r = self._client.post("/proctor_flags", json=row.payload())
+            r.raise_for_status()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("proctor flag dropped: %s %s (%s)", row.flag_type, row.student_id, exc)
+
+    def create_zone_aggregate(self, row: ZoneAggregateRow) -> None:
+        """Zone aggregates are periodic and reproducible from a re-run — like
+        the other inference writes, log-and-drop on failure."""
+        try:
+            r = self._client.post("/engagement_zone_aggregates", json=row.payload())
+            r.raise_for_status()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("zone aggregate dropped: %s (%s)", row.zone, exc)
 
     def _ensure_default_device(self) -> str:
         """class_sessions.device_id is NOT NULL but browser capture has no
