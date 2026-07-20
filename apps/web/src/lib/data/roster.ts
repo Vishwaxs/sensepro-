@@ -104,7 +104,10 @@ export function subscribePresence(
         table: "presence_intervals",
         filter: `session_id=eq.${sessionId}`,
       },
-      (payload) => onChange(payload.new as IntervalRow),
+      (payload) => {
+        const row = payload.new as IntervalRow;
+        if (row?.id) onChange(row); // DELETE events carry an empty payload.new
+      },
     )
     .subscribe((status) => onStatus?.(status === "SUBSCRIBED"));
   return () => {

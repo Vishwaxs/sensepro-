@@ -21,6 +21,7 @@ import {
 } from "@/lib/data/roster";
 import type { ActiveSession, IntervalRow } from "@/lib/data/roster";
 import { exportSessionPdf } from "@/lib/data/report";
+import { ProctorReviewPanel } from "@/components/ProctorReviewPanel";
 import type { RosterEntry } from "@/lib/types";
 import { cn, fmtDuration, initials } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -44,6 +45,7 @@ export function TeacherDashboard() {
   const [session, setSession] = useState<ActiveSession | null>(null);
   const [roster, setRoster] = useState<RosterEntry[]>([]);
   const [realtimeLive, setRealtimeLive] = useState(false);
+  const [pendingFlags, setPendingFlags] = useState(0);
   const studentsRef = useRef<Awaited<ReturnType<typeof fetchStudents>>>([]);
   const intervalsRef = useRef<Map<string, IntervalRow>>(new Map());
 
@@ -97,6 +99,14 @@ export function TeacherDashboard() {
     ? (roster.filter((r) => r.state !== "ABSENT").length / roster.length) * 100
     : 0;
 
+  /* Stable once the initial load resolves; keyed on `load` because refs
+     don't re-render. */
+  const studentNames = useMemo(
+    () => new Map(studentsRef.current.map((s) => [s.id, s.full_name])),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [load],
+  );
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return roster;
@@ -147,7 +157,7 @@ export function TeacherDashboard() {
         <StatCard label="Present" value={presentCount} icon={Users} tone="ok" note="recognised in the last re-ID pass" />
         <StatCard label="Total roster" value={roster.length} icon={UsersRound} note="enrolled with signed consent" />
         <StatCard label="Avg attendance" value={avgAttendance} decimals={0} suffix="%" icon={Percent} note="this session so far" />
-        <StatCard label="Flags" value={0} icon={Flag} tone="warn" note="proctor queue — human review only" />
+        <StatCard label="Awaiting review" value={pendingFlags} icon={Flag} tone="warn" note="proctor queue — human review only" />
       </motion.div>
 
       {/* Live roster */}
@@ -248,6 +258,15 @@ export function TeacherDashboard() {
             </div>
           )}
         </Card>
+      </motion.div>
+
+      {/* Human review queue — exam-mode candidate events, live over Realtime */}
+      <motion.div {...rise} transition={{ duration: 0.2, ease: "easeOut", delay: 0.1 }}>
+        <ProctorReviewPanel
+          sessionId={session?.id ?? null}
+          studentNames={studentNames}
+          onPendingCount={setPendingFlags}
+        />
       </motion.div>
     </div>
   );

@@ -17,6 +17,8 @@ import { supabase } from "./supabase";
 import type { Role } from "./types";
 
 export interface AppUser {
+  /** Supabase auth uid — recorded as reviewed_by on proctor flag reviews. */
+  id: string;
   name: string;
   email: string;
   role: Role;
@@ -56,7 +58,7 @@ function toAppUser(session: Session | null): AppUser | null {
     (session.user.user_metadata?.full_name as string | undefined) ||
     session.user.email?.split("@")[0] ||
     "User";
-  return { name, email: session.user.email ?? "", role };
+  return { id: session.user.id, name, email: session.user.email ?? "", role };
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
