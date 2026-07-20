@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { CountUp } from "./CountUp";
 import { cn } from "@/lib/utils";
+import { SpotlightCard } from "@/components/fx";
 
 type Accent = "primary" | "accent" | "ok" | "warn" | "bad" | "muted";
 
@@ -33,11 +34,12 @@ export function KpiCard({
   const color = accentVar[accent];
 
   return (
-    <div
+    <SpotlightCard
       className={cn(
-        "glass-panel card-hover relative flex flex-col justify-between overflow-hidden px-5 py-4",
+        "glass-frosted glass-hover relative flex flex-col justify-between overflow-hidden rounded-xl px-5 py-4",
         className,
       )}
+      spotlightColor={`color-mix(in oklab, ${color} 15%, transparent)`}
     >
       {/* left accent rule with soft glow */}
       <div
@@ -73,6 +75,6 @@ export function KpiCard({
           {hint}
         </div>
       ) : null}
-    </div>
+    </SpotlightCard>
   );
 }

@@ -1,12 +1,12 @@
 import type { ZoneAggregate } from "@/lib/data/types";
 
 /** Camera coverage by zone: one horizontal strip, segment width ∝ visible
- *  students. Magnitude uses a single-hue sequential cobalt ramp (deepest =
+ *  students. Magnitude uses a single-hue sequential amber ramp (deepest =
  *  most visible); each segment carries a direct label, so meaning never
  *  rides on color alone. Suppressed zones (k < 5) render as a hatched
  *  muted segment with no numbers — the k-anonymity floor made visible. */
 
-const RAMP = ["#1D4ED8", "#1E40AF", "#1E3A8A"];
+const RAMP = ["#F59E0B", "#D97706", "#B45309"];
 
 export function ZoneStrip({ zones }: { zones: ZoneAggregate[] }) {
   const total = zones.reduce((acc, z) => acc + (z.suppressed ? 0 : z.n_visible), 0);

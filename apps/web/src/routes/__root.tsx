@@ -9,6 +9,7 @@ import {
 } from "@tanstack/react-router";
 import { useEffect, type ReactNode } from "react";
 import { Toaster } from "sonner";
+import { ThemeProvider } from "@/lib/theme";
 
 import appCss from "../styles.css?url";
 
@@ -91,7 +92,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
         content:
           "SensePro+ is a dark, cinematic classroom operations console for browser-based attendance, proctor review, and fairness-aware class-level analytics.",
       },
-      { name: "theme-color", content: "#0B1120" },
+      { name: "theme-color", content: "#07070A" },
       { property: "og:title", content: "SensePro+ · Classroom Command Center" },
       {
         property: "og:description",
@@ -136,19 +137,21 @@ function RootComponent() {
   const { queryClient } = Route.useRouteContext();
 
   return (
-    <QueryClientProvider client={queryClient}>
-      <Outlet />
-      <Toaster
-        position="bottom-right"
-        toastOptions={{
-          style: {
-            background: "var(--surface-2)",
-            border: "1px solid var(--line)",
-            color: "var(--ink)",
-            fontFamily: "var(--font-sans)",
-          },
-        }}
-      />
-    </QueryClientProvider>
+    <ThemeProvider>
+      <QueryClientProvider client={queryClient}>
+        <Outlet />
+        <Toaster
+          position="bottom-right"
+          toastOptions={{
+            style: {
+              background: "var(--surface-2)",
+              border: "1px solid var(--line)",
+              color: "var(--ink)",
+              fontFamily: "var(--font-sans)",
+            },
+          }}
+        />
+      </QueryClientProvider>
+    </ThemeProvider>
   );
 }

@@ -51,30 +51,30 @@ function ManagementPage() {
             <LineChart data={trend} margin={{ top: 10, right: 12, left: -10, bottom: 0 }}>
               <defs>
                 <linearGradient id="vneiG" x1="0" x2="1">
-                  <stop offset="0%" stopColor="#22D3EE" />
-                  <stop offset="100%" stopColor="#3B82F6" />
+                  <stop offset="0%" stopColor="#F59E0B" />
+                  <stop offset="100%" stopColor="#10B981" />
                 </linearGradient>
               </defs>
-              <CartesianGrid stroke="#22304D" strokeDasharray="2 4" />
-              <XAxis dataKey="session" stroke="#8094B0" tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }} />
-              <YAxis domain={[0, 1]} stroke="#8094B0" tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }} />
+              <CartesianGrid stroke="rgba(255,255,255,0.06)" strokeDasharray="2 4" />
+              <XAxis dataKey="session" stroke="#6B6B78" tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }} />
+              <YAxis domain={[0, 1]} stroke="#6B6B78" tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }} />
               <Tooltip
                 contentStyle={{
-                  background: "#16213B",
-                  border: "1px solid #22304D",
+                  background: "#151519",
+                  border: "1px solid rgba(255,255,255,0.06)",
                   borderRadius: 8,
                   fontFamily: "IBM Plex Mono",
                   fontSize: 12,
                 }}
-                labelStyle={{ color: "#8094B0" }}
+                labelStyle={{ color: "#6B6B78" }}
               />
               <Line
                 type="monotone"
                 dataKey="vnei"
                 stroke="url(#vneiG)"
                 strokeWidth={2.5}
-                dot={{ fill: "#3B82F6", r: 3 }}
-                activeDot={{ r: 5, fill: "#22D3EE" }}
+                dot={{ fill: "#F59E0B", r: 3 }}
+                activeDot={{ r: 5, fill: "#10B981" }}
               />
             </LineChart>
           </ResponsiveContainer>

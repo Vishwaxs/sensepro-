@@ -1,4 +1,5 @@
 import { Link, useRouterState, Outlet } from "@tanstack/react-router";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   Radio, Users, BarChart3, Shield, User, Command, Fingerprint,
   ShieldAlert, LineChart, ClipboardList, Menu, X, LogOut,
@@ -6,6 +7,7 @@ import {
 import { ConnectionBadge } from "./ConnectionBadge";
 import { cn } from "@/lib/utils";
 import { useState, type ReactNode } from "react";
+import { MagneticHover, ParticleField, ThemeToggle } from "@/components/fx";
 
 export type AppRole = "teacher" | "management" | "admin" | "proctor" | "student";
 
@@ -38,14 +40,14 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
       {/* Brand */}
       <div className="flex items-center gap-3 px-5 pt-5 pb-6">
         <div
-          className="flex h-8 w-8 items-center justify-center rounded-md border border-[color:var(--line)]"
+          className="flex h-8 w-8 items-center justify-center rounded-md border border-[color:var(--line)] animate-breathe"
           style={{ background: "linear-gradient(135deg, var(--primary-deep), var(--primary))" }}
         >
-          <Command className="h-4 w-4 text-white" strokeWidth={2.25} />
+          <Command className="h-4 w-4 text-[#07070A]" strokeWidth={2.25} />
         </div>
         <div className="min-w-0">
           <div className="font-display text-[15px] font-extrabold leading-none tracking-tight text-[color:var(--ink)]">
-            SensePro<span className="text-[color:var(--accent)]">+</span>
+            SensePro<span className="text-gradient">+</span>
           </div>
           <div className="sp-eyebrow mt-1.5 text-[9.5px] leading-none">Command Center</div>
         </div>
@@ -60,32 +62,33 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
           const active = pathname.startsWith(n.to);
           const Icon = n.icon;
           return (
-            <Link
-              key={n.to}
-              to={n.to}
-              data-active={active}
-              onClick={() => setMobileOpen(false)}
-              className={cn(
-                "sp-focus group relative flex h-11 items-center gap-3 rounded-md px-3 text-[13px] transition-all duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]",
-                active
-                  ? "bg-gradient-to-r from-[color:var(--surface-2)] to-[color:var(--surface-2)]/40 text-[color:var(--ink)] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.05)]"
-                  : "text-[color:var(--muted)] hover:bg-[color:var(--surface-2)]/50 hover:text-[color:var(--ink)]",
-              )}
-            >
-              <span
-                aria-hidden
+            <MagneticHover key={n.to} strength={active ? 0 : 4}>
+              <Link
+                to={n.to}
+                data-active={active}
+                onClick={() => setMobileOpen(false)}
                 className={cn(
-                  "absolute left-0 top-1/2 h-5 w-[2px] -translate-y-1/2 rounded-r-full transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
-                  active ? "opacity-100 shadow-[0_0_10px_rgba(34,211,238,0.6)]" : "opacity-0",
+                  "sp-focus group relative flex h-11 items-center gap-3 rounded-md px-3 text-[13px] transition-all duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]",
+                  active
+                    ? "bg-gradient-to-r from-[color:var(--surface-2)] to-[color:var(--surface-2)]/40 text-[color:var(--ink)] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.05)]"
+                    : "text-[color:var(--muted)] hover:bg-[color:var(--surface-2)]/50 hover:text-[color:var(--ink)]",
                 )}
-                style={{ background: "var(--accent)" }}
-              />
-              <Icon className={cn("h-[15px] w-[15px]", active && "text-[color:var(--accent)]")} strokeWidth={2} />
-              <span className="flex-1 truncate">{n.label}</span>
-              <span className="font-mono-nums text-[9.5px] tracking-[0.14em] text-[color:var(--muted)]">
-                {n.mono}
-              </span>
-            </Link>
+              >
+                <span
+                  aria-hidden
+                  className={cn(
+                    "absolute left-0 top-1/2 h-5 w-[2px] -translate-y-1/2 rounded-r-full transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
+                    active ? "opacity-100 shadow-[0_0_10px_rgba(245,158,11,0.5)]" : "opacity-0",
+                  )}
+                  style={{ background: "var(--primary)" }}
+                />
+                <Icon className={cn("h-[15px] w-[15px] transition-colors duration-200", active && "text-[color:var(--primary)]")} strokeWidth={2} />
+                <span className="flex-1 truncate">{n.label}</span>
+                <span className="font-mono-nums text-[9.5px] tracking-[0.14em] text-[color:var(--muted)]">
+                  {n.mono}
+                </span>
+              </Link>
+            </MagneticHover>
           );
         })}
       </nav>
@@ -102,6 +105,7 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
               t.rao@campus
             </div>
           </div>
+          <ThemeToggle className="shrink-0 bg-[color:var(--surface)] hover:bg-[color:var(--surface-2)] border-transparent hover:border-[color:var(--line)]" />
           <Link
             to="/login"
             className="sp-focus flex h-8 w-8 items-center justify-center rounded-md text-[color:var(--muted)] transition-colors hover:bg-[color:var(--surface)] hover:text-[color:var(--ink)]"
@@ -115,9 +119,12 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
   );
 
   return (
-    <div className="app-bg flex min-h-screen w-full">
+    <div className="app-bg relative flex min-h-screen w-full overflow-hidden">
+      {/* Ambient layers */}
+      <ParticleField className="fixed inset-0 -z-10" count={10} maxOpacity={0.05} speed={0.1} />
+
       {/* Desktop sidebar */}
-      <aside className="glass-chrome sticky top-0 hidden h-screen w-[232px] shrink-0 flex-col rounded-none border-0 border-r border-[color:var(--line)] lg:flex">
+      <aside className="glass-frosted sticky top-0 hidden h-screen w-[232px] shrink-0 flex-col rounded-none border-0 border-r border-[color:var(--line)] lg:flex">
         {navContent}
       </aside>
 
@@ -148,7 +155,7 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
 
       {/* Main column */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="glass-chrome sticky top-0 z-20 flex h-14 items-center gap-4 rounded-none border-0 border-b border-[color:var(--line)] px-4 sm:px-8">
+        <header className="glass-frosted sticky top-0 z-20 flex h-14 items-center gap-4 rounded-none border-0 border-b border-[color:var(--line)] px-4 sm:px-8">
           {/* Mobile hamburger */}
           <button
             onClick={() => setMobileOpen(true)}
@@ -176,7 +183,18 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
             <ConnectionBadge state="LIVE" />
           </div>
         </header>
-        <main className="min-w-0 flex-1 px-4 py-6 sm:px-8 sm:py-8">{children ?? <Outlet />}</main>
+        <AnimatePresence mode="wait">
+          <motion.main
+            key={pathname}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.25, ease: [0.25, 0.46, 0.45, 0.94] }}
+            className="min-w-0 flex-1 px-4 py-6 sm:px-8 sm:py-8"
+          >
+            {children ?? <Outlet />}
+          </motion.main>
+        </AnimatePresence>
       </div>
     </div>
   );

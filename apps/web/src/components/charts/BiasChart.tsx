@@ -2,14 +2,14 @@ import { useState } from "react";
 import type { ZoneAggregate } from "@/lib/data/types";
 
 /** Naive mean vs VNEI, grouped bars per classroom zone.
- *  Series palette validated (dataviz six-checks, dark surface #111A2E):
- *  naive = #0891B2, VNEI = #3B82F6. Tritan ΔE sits in the floor band, so
+ *  Series palette validated (dataviz six-checks, dark surface #0E0E12):
+ *  naive = #F59E0B, VNEI = #10B981. Warm-cold contrast ensures
  *  identity is reinforced with a legend, direct labels and bar gaps —
  *  never color alone. Values are ink-colored text, one axis, 0–100%. */
 
 const SERIES = [
-  { key: "naive_mean" as const, label: "Naive mean", color: "#0891B2" },
-  { key: "vnei" as const, label: "VNEI", color: "#3B82F6" },
+  { key: "naive_mean" as const, label: "Naive mean", color: "var(--primary)" },
+  { key: "vnei" as const, label: "VNEI", color: "var(--accent)" },
 ];
 
 const VW = 460;
@@ -68,7 +68,7 @@ export function BiasChart({ zones }: { zones: ZoneAggregate[] }) {
               x2={VW - PAD.right}
               y1={y(t)}
               y2={y(t)}
-              stroke="#22304D"
+              stroke="var(--line-strong)"
               strokeWidth={t === 0 ? 1.25 : 0.75}
               strokeDasharray={t === 0 ? undefined : "3 4"}
             />
@@ -77,7 +77,7 @@ export function BiasChart({ zones }: { zones: ZoneAggregate[] }) {
               y={y(t) + 3.5}
               textAnchor="end"
               fontSize={10}
-              fill="#8094B0"
+              fill="var(--muted)"
               fontFamily="'IBM Plex Mono', monospace"
             >
               {Math.round(t * 100)}
@@ -129,7 +129,7 @@ export function BiasChart({ zones }: { zones: ZoneAggregate[] }) {
                       textAnchor="middle"
                       fontSize={11}
                       fontWeight={isHover ? 600 : 500}
-                      fill={isHover ? "#E8EEF7" : "#8094B0"}
+                      fill={isHover ? "var(--ink)" : "var(--muted)"}
                       fontFamily="'IBM Plex Mono', monospace"
                     >
                       {Math.round(z[s.key] * 100)}%
@@ -142,7 +142,7 @@ export function BiasChart({ zones }: { zones: ZoneAggregate[] }) {
                 y={VH - 9}
                 textAnchor="middle"
                 fontSize={11}
-                fill="#8094B0"
+                fill="var(--muted)"
                 fontFamily="'IBM Plex Mono', monospace"
                 style={{ textTransform: "uppercase", letterSpacing: "0.1em" }}
               >
