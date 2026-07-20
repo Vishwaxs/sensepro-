@@ -1,14 +1,12 @@
-import type { ZoneAggregate } from "@/lib/types";
+import type { ZoneAggregate } from "@/lib/data/types";
 
 /** Camera coverage by zone: one horizontal strip, segment width ∝ visible
- *  students. Magnitude uses a single-hue sequential cobalt ramp (deepest =
+ *  students. Magnitude uses a single-hue sequential amber ramp (deepest =
  *  most visible); each segment carries a direct label, so meaning never
  *  rides on color alone. Suppressed zones (k < 5) render as a hatched
  *  muted segment with no numbers — the k-anonymity floor made visible. */
 
-/* Sequential cobalt, dark by rank. All stops keep white labels above 4.5:1
-   (6.7 / 8.7 / 10.4:1), so occupancy reads by both depth and legible number. */
-const RAMP = ["#1D4ED8", "#1E40AF", "#1E3A8A"];
+const RAMP = ["#F59E0B", "#D97706", "#B45309"];
 
 export function ZoneStrip({ zones }: { zones: ZoneAggregate[] }) {
   const total = zones.reduce((acc, z) => acc + (z.suppressed ? 0 : z.n_visible), 0);
@@ -29,13 +27,13 @@ export function ZoneStrip({ zones }: { zones: ZoneAggregate[] }) {
             return (
               <div
                 key={z.zone}
-                className="grid shrink-0 basis-24 place-items-center bg-surface-2"
+                className="grid shrink-0 basis-24 place-items-center bg-[color:var(--surface-2)]"
                 style={{
                   backgroundImage:
                     "repeating-linear-gradient(45deg, transparent 0 6px, rgba(128,148,176,.25) 6px 8px)",
                 }}
               >
-                <span className="font-mono text-[10px] tracking-wider text-muted uppercase">
+                <span className="font-mono-nums text-[10px] uppercase tracking-wider text-[color:var(--muted)]">
                   k&lt;5
                 </span>
               </div>
@@ -47,14 +45,14 @@ export function ZoneStrip({ zones }: { zones: ZoneAggregate[] }) {
               className="grid min-w-16 place-items-center"
               style={{ width: `${(z.n_visible / Math.max(1, total)) * 100}%`, backgroundColor: colorOf(z) }}
             >
-              <span className="font-mono text-[11px] font-medium text-white">
+              <span className="font-mono-nums text-[11px] font-medium text-white">
                 {z.zone} · {z.n_visible}
               </span>
             </div>
           );
         })}
       </div>
-      <p className="mt-2 font-mono text-[11.5px] text-muted">
+      <p className="mt-2 font-mono-nums text-[11.5px] text-[color:var(--muted)]">
         {total} students visible to the camera · zones under k=5 are suppressed, never estimated
       </p>
     </div>
