@@ -51,6 +51,25 @@ Flow: sign in (roles come from the JWT via the access-token hook, migration 0003
 backend persists presence intervals → the teacher roster updates live over Supabase Realtime →
 Export PDF. Reads go browser→Postgres under RLS; the backend only writes (ADR 0004/0006).
 
+## Phase 3 — camera, proctor mode, VNEI engagement
+```bash
+# RTSP camera -> live pipeline (session id from POST /v1/sessions)
+python -m capture.run_session --rtsp "rtsp://admin:PW@192.168.1.15:554/cam/realmonitor?channel=1&subtype=0" \
+  --session <id> --mode lecture
+
+# Exam mode: adds phone/extra-person proctoring (flags land in the teacher
+# review queue as "awaiting review" — humans decide, nothing auto-penalises)
+python -m capture.run_session --rtsp "rtsp://..." --session <id> --mode exam
+# Real object detection: pip install -e '.[proctor]' && PROCTOR_BACKEND=yolo
+
+# Both modes aggregate VNEI engagement to zones (front/mid/back), k>=5 only.
+
+# Honest numbers from a recorded clip + ground truth (see eval/harness.py
+# for the truth JSON shape); reports recognition, duration error, and the
+# proctor FP rate with the gaze-down filter ON vs OFF:
+python -m eval.run --clip exam.mp4 --truth truth.json --mode exam
+```
+
 ## Next (per the PRD)
-Proctor mode + VNEI engagement aggregation + management/admin live data (Week 3).
+Admin live data, seat-zone mapping, student logins (`students.auth_uid`).
 See `docs/SensePro_PRD_v1.md` and `CLAUDE.md`.
