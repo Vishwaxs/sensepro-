@@ -42,10 +42,14 @@ class SessionPipeline:
         self.fsm = PresenceFSM(miss_threshold=miss_threshold)
         self.reid_interval_s = reid_interval_s
         self._last_reid_pass = -1e9
+        self.last_tracks: list[Track] = []
 
     def process_frame(self, frame_bgr: np.ndarray, ts: float) -> dict:
         dets = self.detector.detect(frame_bgr)
         tracks = self.tracker.update(dets)
+        # Exposed for frame observers (proctor/engagement) so they can reuse
+        # this frame's tracks instead of re-running detection.
+        self.last_tracks = tracks
 
         do_reid = (ts - self._last_reid_pass) >= self.reid_interval_s
         transitions: list[tuple[str, str]] = []
