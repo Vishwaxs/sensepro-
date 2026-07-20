@@ -1,42 +1,36 @@
 import { useCallback, useEffect, useState } from "react";
-import { Flag, ScanFace, Smartphone, UsersRound, WifiOff } from "lucide-react";
+import { Flag, Smartphone, WifiOff, Users2, Eye } from "lucide-react";
+import { AnimatePresence, motion } from "framer-motion";
 import { fetchFlags, reviewFlag, subscribeFlags } from "@/lib/data/proctor";
 import type { FlagType, ProctorFlagRow } from "@/lib/data/proctor";
-import { useAuth } from "@/lib/auth";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardHeader } from "@/components/ui/card";
-import { EmptyState } from "@/components/EmptyState";
-import { LiveDot } from "@/components/LiveDot";
-
-/** The human review queue. Every flag arrives "awaiting review" and only a
- *  person moves it to dismissed or upheld — there is no auto-penalty path in
- *  this system, and none of the copy below implies guilt. */
+import { useSessionUser } from "@/hooks/use-session-user";
+import { cn } from "@/lib/utils";
 
 const TYPE_META: Record<FlagType, { icon: typeof Flag; label: string }> = {
-  phone: { icon: Smartphone, label: "Possible phone" },
-  extra_person: { icon: UsersRound, label: "Extra person in frame" },
-  head_pose: { icon: ScanFace, label: "Head-pose event" },
+  phone: { icon: Smartphone, label: "Handheld device visible" },
+  extra_person: { icon: Users2, label: "Additional person in frame" },
+  head_pose: { icon: Eye, label: "Sustained off-screen orientation" },
   other: { icon: Flag, label: "Flagged event" },
 };
 
-function timeOf(iso: string): string {
-  return new Date(iso).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
+function FlagIcon({ type }: { type: FlagType }) {
+  const meta = TYPE_META[type];
+  const Icon = meta.icon;
+  return (
+    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-[color:var(--line)] bg-[color:var(--surface)] text-[color:var(--warn)]">
+      <Icon className="h-4 w-4" />
+    </div>
+  );
 }
 
 interface Props {
   sessionId: string | null;
-  /** students.id -> full name, for attributing a flag to a display name */
   studentNames: Map<string, string>;
   onPendingCount?: (n: number) => void;
 }
 
 export function ProctorReviewPanel({ sessionId, studentNames, onPendingCount }: Props) {
-  const { user } = useAuth();
+  const { user } = useSessionUser();
   const [flags, setFlags] = useState<ProctorFlagRow[]>([]);
   const [load, setLoad] = useState<"loading" | "ready" | "error">("loading");
   const [live, setLive] = useState(false);
@@ -85,94 +79,126 @@ export function ProctorReviewPanel({ sessionId, studentNames, onPendingCount }: 
     if (!user) return;
     setBusyId(flag.id);
     const before = flag;
-    upsert({ ...flag, review_status: status, reviewed_by: user.id }); // optimistic
+    upsert({ ...flag, review_status: status, reviewed_by: user.id });
     try {
       await reviewFlag(flag.id, status, user.id);
     } catch {
-      upsert(before); // revert — the row stays awaiting review
+      upsert(before);
     } finally {
       setBusyId(null);
     }
   };
 
   return (
-    <Card className="mt-6">
-      <CardHeader
-        title="Proctor review"
-        hint="Candidate events from exam mode. A human decides every one — nothing is auto-penalised."
-        action={
-          sessionId ? (
-            live ? (
-              <div className="flex items-center gap-2 font-mono text-[11.5px] text-muted">
-                <LiveDot /> live
-              </div>
-            ) : (
-              <div className="flex items-center gap-2 font-mono text-[11.5px] text-warn">
-                <WifiOff className="size-3.5" aria-hidden="true" /> reconnecting
-              </div>
-            )
-          ) : null
-        }
-      />
+    <section className="glass-panel overflow-hidden">
+      <header className="flex items-center justify-between border-b border-[color:var(--line)] px-5 py-4">
+        <div>
+          <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--muted)]">
+            Proctor review
+          </div>
+          <div className="mt-0.5 font-display text-lg font-extrabold tracking-tight text-[color:var(--ink)]">
+            Awaiting review
+          </div>
+        </div>
+        <div className="flex flex-col items-end gap-1">
+          <div className="font-mono-nums text-[11px] text-[color:var(--muted)]">
+            {pending.length} open · human decision required
+          </div>
+          {sessionId && live ? (
+            <span className="flex items-center gap-1.5 font-mono-nums text-[10px] text-[color:var(--ok)]">
+              <span className="relative flex h-2 w-2">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[color:var(--ok)] opacity-75" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-[color:var(--ok)]" />
+              </span>
+              live
+            </span>
+          ) : sessionId ? (
+            <span className="flex items-center gap-1.5 font-mono-nums text-[10px] text-[color:var(--warn)]">
+              <WifiOff className="h-3 w-3" /> reconnecting...
+            </span>
+          ) : null}
+        </div>
+      </header>
+      
       {load === "loading" ? (
-        <p className="px-5 py-8 text-center font-mono text-[12.5px] text-muted">loading queue…</p>
+        <p className="px-5 py-8 text-center font-mono text-[12.5px] text-[color:var(--muted)]">loading queue…</p>
       ) : load === "error" ? (
-        <EmptyState
-          icon={WifiOff}
-          title="Could not load the review queue"
-          hint="Check your connection and role, then reload."
-        />
+        <div className="flex flex-col items-center justify-center py-12 text-[color:var(--muted)]">
+          <WifiOff className="mb-4 h-8 w-8 opacity-50" />
+          <div className="font-display text-lg font-medium text-[color:var(--ink)]">Could not load queue</div>
+          <p className="mt-1 text-sm">Check your connection and role, then reload.</p>
+        </div>
       ) : flags.length === 0 ? (
-        <EmptyState
-          icon={Flag}
-          title="No flags in this session"
-          hint="Exam-mode capture raises candidate events here for human review."
-        />
+        <div className="flex flex-col items-center justify-center py-12 text-[color:var(--muted)]">
+          <Flag className="mb-4 h-8 w-8 opacity-50" />
+          <div className="font-display text-lg font-medium text-[color:var(--ink)]">No flags in this session</div>
+          <p className="mt-1 text-sm">Exam-mode capture raises candidate events here.</p>
+        </div>
       ) : (
-        <ul className="divide-y divide-line/60">
-          {flags.map((f) => {
-            const meta = TYPE_META[f.flag_type];
-            const who = f.student_id ? (studentNames.get(f.student_id) ?? "Unknown student") : null;
-            return (
-              <li key={f.id} className="flex flex-wrap items-center gap-3 px-5 py-3">
-                <meta.icon className="size-4 shrink-0 text-muted" aria-hidden="true" />
-                <div className="min-w-0 flex-1">
-                  <p className="text-[13.5px] font-medium text-ink">
-                    {meta.label}
-                    {who ? <span className="text-muted"> · near {who}</span> : null}
-                  </p>
-                  <p className="font-mono text-[11.5px] text-muted">{timeOf(f.flagged_at)}</p>
-                </div>
-                {f.review_status === "pending" ? (
-                  <>
-                    <Badge tone="warn">Awaiting review</Badge>
-                    <div className="flex gap-2">
-                      <Button
-                        variant="outline"
-                        onClick={() => void review(f, "dismissed")}
+        <div className="max-h-[560px] space-y-3 overflow-y-auto p-4">
+          <AnimatePresence initial={false}>
+            {flags.map((f) => {
+              const who = f.student_id ? (studentNames.get(f.student_id) ?? "Unknown student") : "—";
+              return (
+                <motion.article
+                  key={f.id}
+                  layout
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, x: 20 }}
+                  transition={{ duration: 0.2, ease: "easeOut" }}
+                  className={cn(
+                    "rounded-lg border p-4",
+                    f.review_status === "pending"
+                      ? "border-[color:var(--warn)]/40 bg-[color:var(--surface-2)]/60"
+                      : "border-[color:var(--line)] bg-[color:var(--surface-2)]/30 opacity-60",
+                  )}
+                >
+                  <div className="flex items-center gap-3">
+                    <FlagIcon type={f.flag_type} />
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium text-[color:var(--ink)]">
+                        {who} · {TYPE_META[f.flag_type].label}
+                      </div>
+                      <div className="font-mono-nums text-[11px] text-[color:var(--muted)]">
+                        {f.session_id} · {new Date(f.flagged_at).toLocaleTimeString()}
+                      </div>
+                    </div>
+                    <span
+                      className={cn(
+                        "font-mono-nums text-[10px] uppercase tracking-wider",
+                        f.review_status === "pending" && "text-[color:var(--warn)]",
+                        f.review_status === "dismissed" && "text-[color:var(--muted)]",
+                        f.review_status === "upheld" && "text-[color:var(--bad)]",
+                      )}
+                    >
+                      {f.review_status.replace("_", " ")}
+                    </span>
+                  </div>
+                  {f.review_status === "pending" && (
+                    <div className="mt-3 flex items-center gap-2">
+                      <button
+                        onClick={() => review(f, "dismissed")}
                         disabled={busyId === f.id}
+                        className="sp-focus h-12 flex-1 rounded-md border border-[color:var(--line)] bg-[color:var(--surface-2)] text-xs font-semibold text-[color:var(--ink)] transition-colors hover:bg-[color:var(--surface)]"
                       >
                         Dismiss
-                      </Button>
-                      <Button
-                        variant="outline"
-                        onClick={() => void review(f, "upheld")}
+                      </button>
+                      <button
+                        onClick={() => review(f, "upheld")}
                         disabled={busyId === f.id}
+                        className="sp-focus h-12 flex-1 rounded-md bg-[color:var(--primary)] text-xs font-semibold text-white transition-colors hover:bg-[color:var(--primary-deep)]"
                       >
                         Uphold
-                      </Button>
+                      </button>
                     </div>
-                  </>
-                ) : f.review_status === "dismissed" ? (
-                  <Badge tone="muted">Dismissed</Badge>
-                ) : (
-                  <Badge tone="bad">Upheld</Badge>
-                )}
-              </li>
-            );
-          })}
-        </ul>
+                  )}
+                </motion.article>
+              );
+            })}
+          </AnimatePresence>
+        </div>
       )}
-    </Card>
+    </section>
   );
 }

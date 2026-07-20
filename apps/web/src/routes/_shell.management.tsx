@@ -13,7 +13,6 @@ import { fetchZoneAggregates } from "@/lib/data/engagement";
 import type { ZoneAggregateRow } from "@/lib/data/engagement";
 import { VneiPanel } from "@/components/charts/VneiPanel";
 import { WifiOff, GaugeCircle } from "lucide-react";
-import { EmptyState } from "@/components/EmptyState";
 
 export const Route = createFileRoute("/_shell/management")({
   head: () => ({
@@ -125,17 +124,17 @@ function ManagementPage() {
               loading aggregates…
             </p>
           ) : load === "error" ? (
-            <EmptyState
-              icon={WifiOff}
-              title="Could not load engagement data"
-              hint="Check your connection and role, then refresh."
-            />
+            <div className="flex flex-col items-center justify-center py-12 text-[color:var(--muted)]">
+              <WifiOff className="mb-4 h-8 w-8 opacity-50" />
+              <div className="font-display text-lg font-medium text-[color:var(--ink)]">Could not load engagement data</div>
+              <p className="mt-1 text-sm">Check your connection and role, then refresh.</p>
+            </div>
           ) : rows.length === 0 ? (
-            <EmptyState
-              icon={GaugeCircle}
-              title={session ? "No windows recorded yet" : "No live session"}
-              hint="Zone aggregates appear once a session runs with at least 5 tracked faces in a zone."
-            />
+            <div className="flex flex-col items-center justify-center py-12 text-[color:var(--muted)]">
+              <GaugeCircle className="mb-4 h-8 w-8 opacity-50" />
+              <div className="font-display text-lg font-medium text-[color:var(--ink)]">{session ? "No windows recorded yet" : "No live session"}</div>
+              <p className="mt-1 text-sm">Zone aggregates appear once a session runs with at least 5 tracked faces in a zone.</p>
+            </div>
           ) : (
             <VneiPanel rows={rows} />
           )}

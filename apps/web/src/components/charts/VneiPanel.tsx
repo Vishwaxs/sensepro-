@@ -1,6 +1,21 @@
 import type { ZoneAggregateRow } from "@/lib/data/engagement";
 import { latestWindow } from "@/lib/data/engagement";
-import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
+
+function Badge({ tone, children }: { tone: "warn" | "muted" | "ok"; children: React.ReactNode }) {
+  return (
+    <span
+      className={cn(
+        "rounded-md border px-2 py-0.5 font-mono-nums text-[10px] uppercase tracking-wider",
+        tone === "warn" && "border-[color:var(--warn)]/40 bg-[color:var(--warn)]/10 text-[color:var(--warn)]",
+        tone === "muted" && "border-[color:var(--muted)]/40 bg-[color:var(--surface)] text-[color:var(--muted)]",
+        tone === "ok" && "border-[color:var(--ok)]/40 bg-[color:var(--ok)]/10 text-[color:var(--ok)]"
+      )}
+    >
+      {children}
+    </span>
+  );
+}
 
 /** Live VNEI by zone with the honesty devices attached: every bar carries a
  *  coverage badge, coverage under 50% renders hatched LOW-CONFIDENCE, and a
