@@ -1,8 +1,19 @@
 import { Link, useRouterState, Outlet } from "@tanstack/react-router";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Radio, Users, BarChart3, Shield, User, Command, Fingerprint,
-  ShieldAlert, LineChart, ClipboardList, Menu, X, LogOut,
+  Radio,
+  Users,
+  BarChart3,
+  Shield,
+  User,
+  Command,
+  Fingerprint,
+  ShieldAlert,
+  LineChart,
+  ClipboardList,
+  Menu,
+  X,
+  LogOut,
 } from "lucide-react";
 import { ConnectionBadge } from "./ConnectionBadge";
 import { cn } from "@/lib/utils";
@@ -22,10 +33,28 @@ interface NavItem {
 const NAV: NavItem[] = [
   { to: "/capture", label: "Capture", icon: Radio, mono: "CAP", roles: ["teacher", "admin"] },
   { to: "/teacher", label: "Teacher", icon: Users, mono: "TCH", roles: ["teacher", "admin"] },
-  { to: "/sessions", label: "Sessions", icon: ClipboardList, mono: "SES", roles: ["teacher", "admin"] },
-  { to: "/proctor", label: "Proctor", icon: ShieldAlert, mono: "PRO", roles: ["teacher", "proctor", "admin"] },
+  {
+    to: "/sessions",
+    label: "Sessions",
+    icon: ClipboardList,
+    mono: "SES",
+    roles: ["teacher", "admin"],
+  },
+  {
+    to: "/proctor",
+    label: "Proctor",
+    icon: ShieldAlert,
+    mono: "PRO",
+    roles: ["teacher", "proctor", "admin"],
+  },
   { to: "/enrollment", label: "Enrollment", icon: Fingerprint, mono: "ENR", roles: ["admin"] },
-  { to: "/management", label: "Management", icon: BarChart3, mono: "MGT", roles: ["management", "admin"] },
+  {
+    to: "/management",
+    label: "Management",
+    icon: BarChart3,
+    mono: "MGT",
+    roles: ["management", "admin"],
+  },
   { to: "/trends", label: "Trends", icon: LineChart, mono: "TRD", roles: ["management", "admin"] },
   { to: "/admin", label: "Admin", icon: Shield, mono: "ADM", roles: ["admin"] },
   { to: "/me", label: "Me", icon: User, mono: "ME" },
@@ -82,7 +111,13 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
                   )}
                   style={{ background: "var(--primary)" }}
                 />
-                <Icon className={cn("h-[15px] w-[15px] transition-colors duration-200", active && "text-[color:var(--primary)]")} strokeWidth={2} />
+                <Icon
+                  className={cn(
+                    "h-[15px] w-[15px] transition-colors duration-200",
+                    active && "text-[color:var(--primary)]",
+                  )}
+                  strokeWidth={2}
+                />
                 <span className="flex-1 truncate">{n.label}</span>
                 <span className="font-mono-nums text-[9.5px] tracking-[0.14em] text-[color:var(--muted)]">
                   {n.mono}
@@ -100,7 +135,9 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
             RR
           </div>
           <div className="min-w-0 flex-1">
-            <div className="truncate text-[13px] leading-tight text-[color:var(--ink)]">Dr. R. Rao</div>
+            <div className="truncate text-[13px] leading-tight text-[color:var(--ink)]">
+              Dr. R. Rao
+            </div>
             <div className="truncate font-mono-nums text-[10px] leading-tight text-[color:var(--muted)]">
               t.rao@campus
             </div>
@@ -169,16 +206,18 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
             <h1 className="truncate font-display text-[17px] font-extrabold leading-none tracking-tight text-[color:var(--ink)]">
               {title}
             </h1>
-            <span className="sp-eyebrow text-[10px]">
-              /{pathname.replace(/^\//, "")}
-            </span>
+            <span className="sp-eyebrow text-[10px]">/{pathname.replace(/^\//, "")}</span>
           </div>
           <div className="ml-auto flex items-center gap-3">
             <div
               aria-label={new Date().toDateString()}
               className="hidden font-mono-nums text-[11px] tracking-wide text-[color:var(--muted)] sm:block"
             >
-              {new Date().toLocaleDateString(undefined, { weekday: "short", day: "2-digit", month: "short" })}
+              {new Date().toLocaleDateString(undefined, {
+                weekday: "short",
+                day: "2-digit",
+                month: "short",
+              })}
             </div>
             <ConnectionBadge state="LIVE" />
           </div>

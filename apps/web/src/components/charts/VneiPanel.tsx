@@ -7,9 +7,12 @@ function Badge({ tone, children }: { tone: "warn" | "muted" | "ok"; children: Re
     <span
       className={cn(
         "rounded-md border px-2 py-0.5 font-mono-nums text-[10px] uppercase tracking-wider",
-        tone === "warn" && "border-[color:var(--warn)]/40 bg-[color:var(--warn)]/10 text-[color:var(--warn)]",
-        tone === "muted" && "border-[color:var(--muted)]/40 bg-[color:var(--surface)] text-[color:var(--muted)]",
-        tone === "ok" && "border-[color:var(--ok)]/40 bg-[color:var(--ok)]/10 text-[color:var(--ok)]"
+        tone === "warn" &&
+          "border-[color:var(--warn)]/40 bg-[color:var(--warn)]/10 text-[color:var(--warn)]",
+        tone === "muted" &&
+          "border-[color:var(--muted)]/40 bg-[color:var(--surface)] text-[color:var(--muted)]",
+        tone === "ok" &&
+          "border-[color:var(--ok)]/40 bg-[color:var(--ok)]/10 text-[color:var(--ok)]",
       )}
     >
       {children}
@@ -77,9 +80,7 @@ function Sparkline({ zone, rows }: { zone: string; rows: ZoneAggregateRow[] }) {
   const H = 36;
   if (rows.length < 2) {
     return (
-      <p className="font-mono text-[11px] text-muted">
-        trend appears after two or more windows
-      </p>
+      <p className="font-mono text-[11px] text-muted">trend appears after two or more windows</p>
     );
   }
   const step = W / (rows.length - 1);

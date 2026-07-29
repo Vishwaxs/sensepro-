@@ -16,5 +16,20 @@ export default defineConfig({
   server: {
     host: true,
     strictPort: false,
+    // Allow a tunnel hostname (Cloudflare/ngrok) to serve the dev app for the
+    // phone QR demo — Vite otherwise blocks unknown Host headers.
+    allowedHosts: true,
+    // Same-origin backend path so ONE HTTPS tunnel covers the whole demo: the
+    // phone hits /api/... on the tunnel origin and Vite forwards to the local
+    // backend (no CORS, no mixed content). Set VITE_API_BASE=/api to use it;
+    // local laptop dev leaves VITE_API_BASE unset and calls the backend direct.
+    proxy: {
+      "/api": {
+        target: process.env.VITE_PROXY_TARGET || "http://localhost:8000",
+        changeOrigin: true,
+        ws: true,
+        rewrite: (p) => p.replace(/^\/api/, ""),
+      },
+    },
   },
 });

@@ -13,10 +13,12 @@ import {
 } from "@/lib/data/roster";
 import type { ActiveSession, IntervalRow } from "@/lib/data/roster";
 import type { AttendanceState, RosterEntry } from "@/lib/data/types";
+import { guardRoute } from "@/lib/auth-guard";
 import { ProctorReviewPanel } from "@/components/ProctorReviewPanel";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_shell/teacher")({
+  beforeLoad: guardRoute(["teacher", "admin"]),
   head: () => ({
     meta: [{ title: "Teacher · SensePro+" }],
   }),
@@ -57,8 +59,8 @@ function TeacherPage() {
   const rederive = useCallback(() => {
     setRoster((prev) => {
       const next = deriveRoster(studentsRef.current, [...intervalsRef.current.values()]);
-      next.forEach(r => {
-        const old = prev.find(p => p.student_id === r.student_id);
+      next.forEach((r) => {
+        const old = prev.find((p) => p.student_id === r.student_id);
         if (old && old.state !== r.state) {
           flashRef.current.set(r.student_id, Date.now());
         }
@@ -86,7 +88,9 @@ function TeacherPage() {
         if (!cancelled) setLoad("error");
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [rederive]);
 
   useEffect(() => {
@@ -129,14 +133,19 @@ function TeacherPage() {
     [roster, filter],
   );
 
-  const filterCount = (k: "ALL" | AttendanceState) =>
-    k === "ALL" ? total : counts[k];
+  const filterCount = (k: "ALL" | AttendanceState) => (k === "ALL" ? total : counts[k]);
 
   return (
     <div className="space-y-8">
       {/* KPI row */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <KpiCard label="Present" value={present} suffix={`/ ${total}`} accent="ok" hint="Verified now" />
+        <KpiCard
+          label="Present"
+          value={present}
+          suffix={`/ ${total}`}
+          accent="ok"
+          hint="Verified now"
+        />
         <KpiCard label="Total roster" value={total} accent="primary" hint="Enrolled" />
         <KpiCard
           label="Attendance"
@@ -162,7 +171,9 @@ function TeacherPage() {
                 Live roster
               </div>
               <div className="mt-0.5 font-display text-lg font-extrabold tracking-tight text-[color:var(--ink)]">
-                {session ? `${session.class_section}${session.subject ? " · " + session.subject : ""}` : "No live session"}
+                {session
+                  ? `${session.class_section}${session.subject ? " · " + session.subject : ""}`
+                  : "No live session"}
               </div>
               <div className="mt-1 flex items-center gap-2">
                 {session && realtimeLive ? (
@@ -235,13 +246,26 @@ function TeacherPage() {
                     >
                       <td className="w-12 px-4 py-3">
                         <div className="flex h-9 w-9 items-center justify-center rounded-md border border-[color:var(--line)] font-mono-nums text-[10px] font-semibold text-[color:var(--ink)] bg-[color:var(--surface-2)]">
-                          {r.full_name.split(" ").map((p) => p[0]).slice(0, 2).join("")}
+                          {r.full_name
+                            .split(" ")
+                            .map((p) => p[0])
+                            .slice(0, 2)
+                            .join("")}
                         </div>
                       </td>
-                      <td className="px-4 py-3 font-mono-nums text-xs text-[color:var(--muted)]">{r.student_id}</td>
-                      <td className="px-4 py-3 text-[15px] text-[color:var(--ink)]">{r.full_name}</td>
-                      <td className="px-4 py-3"><StateChip state={r.state} /></td>
-                      <td className="px-4 py-3 font-mono-nums text-xs text-[color:var(--muted)]" title={r.last_seen ?? undefined}>
+                      <td className="px-4 py-3 font-mono-nums text-xs text-[color:var(--muted)]">
+                        {r.student_id}
+                      </td>
+                      <td className="px-4 py-3 text-[15px] text-[color:var(--ink)]">
+                        {r.full_name}
+                      </td>
+                      <td className="px-4 py-3">
+                        <StateChip state={r.state} />
+                      </td>
+                      <td
+                        className="px-4 py-3 font-mono-nums text-xs text-[color:var(--muted)]"
+                        title={r.last_seen ?? undefined}
+                      >
                         {formatRelative(r.last_seen, now)}
                       </td>
                     </tr>
@@ -249,7 +273,10 @@ function TeacherPage() {
                 })}
                 {filtered.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-4 py-10 text-center font-mono-nums text-xs text-[color:var(--muted)]">
+                    <td
+                      colSpan={5}
+                      className="px-4 py-10 text-center font-mono-nums text-xs text-[color:var(--muted)]"
+                    >
                       No rows match this filter.
                     </td>
                   </tr>

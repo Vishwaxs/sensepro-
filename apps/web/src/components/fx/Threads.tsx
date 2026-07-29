@@ -20,7 +20,8 @@ export function Threads({
   const { theme } = useTheme();
 
   // Theme-aware default color if none provided
-  const threadColor = color || (theme === "dark" ? "rgba(245, 158, 11, 0.2)" : "rgba(217, 119, 6, 0.1)");
+  const threadColor =
+    color || (theme === "dark" ? "rgba(245, 158, 11, 0.2)" : "rgba(217, 119, 6, 0.1)");
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -85,7 +86,7 @@ export function Threads({
       mouse.x = e.clientX;
       mouse.y = e.clientY;
     };
-    
+
     if (enableMouseInteraction) {
       window.addEventListener("mousemove", handleMouseMove);
     }

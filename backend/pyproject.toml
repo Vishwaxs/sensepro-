@@ -8,6 +8,7 @@ dependencies = [
   "pydantic-settings>=2.2",
   "numpy>=1.26",
   "opencv-python-headless>=4.9",
+  "python-multipart>=0.0.9",
 ]
 [project.optional-dependencies]
 dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.4"]
@@ -21,6 +22,8 @@ supabase = ["httpx>=0.27"]
 proctor = ["ultralytics>=8.2"]
 [project.scripts]
 sensepro-enroll = "enroll.cli:main"
+sensepro-enroll-photos = "enroll.bulk_photos:main"
+sensepro-enroll-videos = "enroll.bulk_videos:main"
 [tool.setuptools.packages.find]
 include = ["app*", "vision*", "presence*", "enroll*", "capture*", "proctor*", "engagement*", "eval*"]
 [tool.ruff]

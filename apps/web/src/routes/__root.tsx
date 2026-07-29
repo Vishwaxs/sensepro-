@@ -13,7 +13,6 @@ import { ThemeProvider } from "@/lib/theme";
 
 import appCss from "../styles.css?url";
 
-
 function NotFoundComponent() {
   return (
     <div className="app-bg flex min-h-screen items-center justify-center px-4">

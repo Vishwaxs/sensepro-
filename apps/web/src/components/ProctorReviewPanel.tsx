@@ -119,26 +119,34 @@ export function ProctorReviewPanel({ sessionId, studentNames, onPendingCount }: 
           ) : null}
         </div>
       </header>
-      
+
       {load === "loading" ? (
-        <p className="px-5 py-8 text-center font-mono text-[12.5px] text-[color:var(--muted)]">loading queue…</p>
+        <p className="px-5 py-8 text-center font-mono text-[12.5px] text-[color:var(--muted)]">
+          loading queue…
+        </p>
       ) : load === "error" ? (
         <div className="flex flex-col items-center justify-center py-12 text-[color:var(--muted)]">
           <WifiOff className="mb-4 h-8 w-8 opacity-50" />
-          <div className="font-display text-lg font-medium text-[color:var(--ink)]">Could not load queue</div>
+          <div className="font-display text-lg font-medium text-[color:var(--ink)]">
+            Could not load queue
+          </div>
           <p className="mt-1 text-sm">Check your connection and role, then reload.</p>
         </div>
       ) : flags.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-12 text-[color:var(--muted)]">
           <Flag className="mb-4 h-8 w-8 opacity-50" />
-          <div className="font-display text-lg font-medium text-[color:var(--ink)]">No flags in this session</div>
+          <div className="font-display text-lg font-medium text-[color:var(--ink)]">
+            No flags in this session
+          </div>
           <p className="mt-1 text-sm">Exam-mode capture raises candidate events here.</p>
         </div>
       ) : (
         <div className="max-h-[560px] space-y-3 overflow-y-auto p-4">
           <AnimatePresence initial={false}>
             {flags.map((f) => {
-              const who = f.student_id ? (studentNames.get(f.student_id) ?? "Unknown student") : "—";
+              const who = f.student_id
+                ? (studentNames.get(f.student_id) ?? "Unknown student")
+                : "—";
               return (
                 <motion.article
                   key={f.id}

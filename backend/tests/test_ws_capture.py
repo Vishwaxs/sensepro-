@@ -5,6 +5,7 @@ presence transitions -> session ends cleanly. No ML models required.
 """
 
 import base64
+import json
 
 import cv2
 import numpy as np
@@ -55,3 +56,35 @@ def test_bad_frame_is_handled() -> None:
 
 def test_health() -> None:
     assert TestClient(app).get("/health").json()["status"] == "ok"
+
+
+def test_load_store_uses_json_when_supabase_disabled(tmp_path, monkeypatch) -> None:
+    from app import ws
+
+    p = tmp_path / "enroll.json"
+    p.write_text(json.dumps({"s1": [[1.0, 0.0, 0.0]]}))
+    monkeypatch.setattr(ws.settings, "supabase_url", "")
+    monkeypatch.setattr(ws.settings, "supabase_secret_key", "")
+    monkeypatch.setattr(ws.settings, "enrollment_json", str(p))
+
+    store = ws._load_store()
+    assert store.roster == {"s1"}
+
+
+def test_load_store_falls_back_to_json_on_supabase_error(tmp_path, monkeypatch) -> None:
+    """A misconfigured/unreachable DB must never leave capture without a gallery."""
+    from app import ws
+
+    p = tmp_path / "enroll.json"
+    p.write_text(json.dumps({"s1": [[1.0, 0.0, 0.0]]}))
+    monkeypatch.setattr(ws.settings, "supabase_url", "http://127.0.0.1:1")
+    monkeypatch.setattr(ws.settings, "supabase_secret_key", "k")
+    monkeypatch.setattr(ws.settings, "enrollment_json", str(p))
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(ws.EmbeddingStore, "from_supabase", _raise)
+
+    store = ws._load_store()
+    assert store.roster == {"s1"}

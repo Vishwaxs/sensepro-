@@ -21,12 +21,12 @@ function AuroraRaw({ className = "", count = 3, speed = 1 }: AuroraProps) {
 
   const blobs = Array.from({ length: count }, (_, i) => {
     const hue = HUES[i % HUES.length];
-    const sat = hue > 100 ? (isDark ? 65 : 45) : (isDark ? 85 : 75);
-    const light = isDark ? (hue > 100 ? 40 : 50) : (hue > 100 ? 75 : 65);
+    const sat = hue > 100 ? (isDark ? 65 : 45) : isDark ? 85 : 75;
+    const light = isDark ? (hue > 100 ? 40 : 50) : hue > 100 ? 75 : 65;
     const delay = -(i * (20 / count));
     const dur = 20 / speed;
     const size = 35 + i * 12;
-    const opacity = isDark ? (hue > 100 ? 0.12 : 0.18) : (hue > 100 ? 0.3 : 0.4);
+    const opacity = isDark ? (hue > 100 ? 0.12 : 0.18) : hue > 100 ? 0.3 : 0.4;
 
     return (
       <div
@@ -44,7 +44,10 @@ function AuroraRaw({ className = "", count = 3, speed = 1 }: AuroraProps) {
   });
 
   return (
-    <div className={`overflow-hidden pointer-events-none select-none ${className}`} aria-hidden="true">
+    <div
+      className={`overflow-hidden pointer-events-none select-none ${className}`}
+      aria-hidden="true"
+    >
       {blobs}
       <style>{`
         @keyframes aurora-drift-a {

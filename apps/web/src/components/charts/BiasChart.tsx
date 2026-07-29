@@ -44,7 +44,10 @@ export function BiasChart({ zones }: { zones: ZoneAggregate[] }) {
     <div>
       <div className="mb-3 flex flex-wrap items-center gap-4">
         {SERIES.map((s) => (
-          <span key={s.key} className="flex items-center gap-2 text-[12.5px] text-[color:var(--muted)]">
+          <span
+            key={s.key}
+            className="flex items-center gap-2 text-[12.5px] text-[color:var(--muted)]"
+          >
             <span
               className="inline-block h-2.5 w-2.5 rounded-[3px]"
               style={{ backgroundColor: s.color }}
@@ -153,7 +156,10 @@ export function BiasChart({ zones }: { zones: ZoneAggregate[] }) {
         })}
       </svg>
 
-      <p className="mt-1 min-h-5 font-mono-nums text-[11.5px] text-[color:var(--muted)]" aria-live="polite">
+      <p
+        className="mt-1 min-h-5 font-mono-nums text-[11.5px] text-[color:var(--muted)]"
+        aria-live="polite"
+      >
         {hover
           ? `${zones[hover.zi].zone} · ${SERIES[hover.si].label}: ${Math.round(
               zones[hover.zi][SERIES[hover.si].key] * 100,
@@ -168,10 +174,18 @@ export function BiasChart({ zones }: { zones: ZoneAggregate[] }) {
         <table className="mt-2 w-full max-w-sm text-left text-[12.5px]">
           <thead>
             <tr className="border-b border-[color:var(--line)] font-mono-nums text-[10.5px] uppercase tracking-wider text-[color:var(--muted)]">
-              <th scope="col" className="py-1.5 pr-3 font-medium">Zone</th>
-              <th scope="col" className="py-1.5 pr-3 font-medium">Naive mean</th>
-              <th scope="col" className="py-1.5 pr-3 font-medium">VNEI</th>
-              <th scope="col" className="py-1.5 font-medium">n visible</th>
+              <th scope="col" className="py-1.5 pr-3 font-medium">
+                Zone
+              </th>
+              <th scope="col" className="py-1.5 pr-3 font-medium">
+                Naive mean
+              </th>
+              <th scope="col" className="py-1.5 pr-3 font-medium">
+                VNEI
+              </th>
+              <th scope="col" className="py-1.5 font-medium">
+                n visible
+              </th>
             </tr>
           </thead>
           <tbody className="font-mono-nums text-[color:var(--ink)]">

@@ -9,8 +9,10 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as NoRoleRouteImport } from './routes/no-role'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as LandingRouteImport } from './routes/landing'
+import { Route as ClaimRouteImport } from './routes/claim'
 import { Route as CaptureRouteImport } from './routes/capture'
 import { Route as ShellRouteImport } from './routes/_shell'
 import { Route as IndexRouteImport } from './routes/index'
@@ -23,6 +25,11 @@ import { Route as ShellManagementRouteImport } from './routes/_shell.management'
 import { Route as ShellEnrollmentRouteImport } from './routes/_shell.enrollment'
 import { Route as ShellAdminRouteImport } from './routes/_shell.admin'
 
+const NoRoleRoute = NoRoleRouteImport.update({
+  id: '/no-role',
+  path: '/no-role',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
@@ -31,6 +38,11 @@ const LoginRoute = LoginRouteImport.update({
 const LandingRoute = LandingRouteImport.update({
   id: '/landing',
   path: '/landing',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ClaimRoute = ClaimRouteImport.update({
+  id: '/claim',
+  path: '/claim',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CaptureRoute = CaptureRouteImport.update({
@@ -91,8 +103,10 @@ const ShellAdminRoute = ShellAdminRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/capture': typeof CaptureRoute
+  '/claim': typeof ClaimRoute
   '/landing': typeof LandingRoute
   '/login': typeof LoginRoute
+  '/no-role': typeof NoRoleRoute
   '/admin': typeof ShellAdminRoute
   '/enrollment': typeof ShellEnrollmentRoute
   '/management': typeof ShellManagementRoute
@@ -105,8 +119,10 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/capture': typeof CaptureRoute
+  '/claim': typeof ClaimRoute
   '/landing': typeof LandingRoute
   '/login': typeof LoginRoute
+  '/no-role': typeof NoRoleRoute
   '/admin': typeof ShellAdminRoute
   '/enrollment': typeof ShellEnrollmentRoute
   '/management': typeof ShellManagementRoute
@@ -121,8 +137,10 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/_shell': typeof ShellRouteWithChildren
   '/capture': typeof CaptureRoute
+  '/claim': typeof ClaimRoute
   '/landing': typeof LandingRoute
   '/login': typeof LoginRoute
+  '/no-role': typeof NoRoleRoute
   '/_shell/admin': typeof ShellAdminRoute
   '/_shell/enrollment': typeof ShellEnrollmentRoute
   '/_shell/management': typeof ShellManagementRoute
@@ -137,8 +155,10 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/capture'
+    | '/claim'
     | '/landing'
     | '/login'
+    | '/no-role'
     | '/admin'
     | '/enrollment'
     | '/management'
@@ -151,8 +171,10 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/capture'
+    | '/claim'
     | '/landing'
     | '/login'
+    | '/no-role'
     | '/admin'
     | '/enrollment'
     | '/management'
@@ -166,8 +188,10 @@ export interface FileRouteTypes {
     | '/'
     | '/_shell'
     | '/capture'
+    | '/claim'
     | '/landing'
     | '/login'
+    | '/no-role'
     | '/_shell/admin'
     | '/_shell/enrollment'
     | '/_shell/management'
@@ -182,12 +206,21 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ShellRoute: typeof ShellRouteWithChildren
   CaptureRoute: typeof CaptureRoute
+  ClaimRoute: typeof ClaimRoute
   LandingRoute: typeof LandingRoute
   LoginRoute: typeof LoginRoute
+  NoRoleRoute: typeof NoRoleRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/no-role': {
+      id: '/no-role'
+      path: '/no-role'
+      fullPath: '/no-role'
+      preLoaderRoute: typeof NoRoleRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/login': {
       id: '/login'
       path: '/login'
@@ -200,6 +233,13 @@ declare module '@tanstack/react-router' {
       path: '/landing'
       fullPath: '/landing'
       preLoaderRoute: typeof LandingRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/claim': {
+      id: '/claim'
+      path: '/claim'
+      fullPath: '/claim'
+      preLoaderRoute: typeof ClaimRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/capture': {
@@ -310,8 +350,10 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ShellRoute: ShellRouteWithChildren,
   CaptureRoute: CaptureRoute,
+  ClaimRoute: ClaimRoute,
   LandingRoute: LandingRoute,
   LoginRoute: LoginRoute,
+  NoRoleRoute: NoRoleRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

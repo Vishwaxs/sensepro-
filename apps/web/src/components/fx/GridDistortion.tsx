@@ -39,19 +39,19 @@ export function GridDistortion({
     window.addEventListener("resize", handleResize);
 
     const mouse = { x: -1000, y: -1000, targetX: -1000, targetY: -1000 };
-    
+
     const handleMouseMove = (e: MouseEvent) => {
       mouse.targetX = e.clientX;
       mouse.targetY = e.clientY;
     };
-    
+
     window.addEventListener("mousemove", handleMouseMove);
 
     let animationFrame: number;
 
     const render = () => {
       ctx.clearRect(0, 0, width, height);
-      
+
       // Smooth mouse follow
       mouse.x += (mouse.targetX - mouse.x) * 0.1;
       mouse.y += (mouse.targetY - mouse.y) * 0.1;
@@ -64,17 +64,17 @@ export function GridDistortion({
           const dx = mouse.x - x;
           const dy = mouse.y - y;
           const dist = Math.sqrt(dx * dx + dy * dy);
-          
+
           let offsetX = 0;
           let offsetY = 0;
-          let color = gridColor;
+          const color = gridColor;
 
           if (dist < mouseRadius) {
             // Distort grid points away from mouse
             const force = (mouseRadius - dist) / mouseRadius;
             offsetX = -(dx / dist) * force * mouseRadius * distortionStrength;
             offsetY = -(dy / dist) * force * mouseRadius * distortionStrength;
-            
+
             // Highlight color near mouse
             ctx.strokeStyle = highlightColor;
           } else {
