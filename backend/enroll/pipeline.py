@@ -7,6 +7,7 @@ Target ~10-20 quality frames/student (50 is overkill).
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 
 import cv2
@@ -23,6 +24,37 @@ class GateConfig:
     min_brightness: int = 40
     max_brightness: int = 220
     per_bin: int = 3  # keep best N per pose bin
+
+
+@dataclass
+class EmbeddingRecord:
+    """One enrolled template with the metadata the embeddings table needs.
+
+    ``vec`` is the L2-normalised 512-d embedding; ``pose_bin`` is the horizontal
+    bin the source frame fell in (matches the DB CHECK); ``quality`` is the
+    Laplacian blur variance of the crop that produced this embedding (a degraded
+    variant is blurrier, so it carries a lower value honestly); ``variant`` marks
+    provenance ('clean' or 'degrade_<height>')."""
+
+    vec: list[float]
+    pose_bin: str
+    quality: float
+    variant: str
+
+
+@dataclass
+class EnrollReport:
+    """Outcome of enrolling a batch of frames, with per-reason reject tallies.
+
+    ``frames_accepted`` counts distinct source frames that passed the gate;
+    the number of embeddings (``len(records)``) differs because of the
+    per-bin cap and degrade variants."""
+
+    frames_seen: int
+    frames_accepted: int
+    reject_reasons: dict[str, int]
+    pose_bins: list[str]
+    records: list[EmbeddingRecord]
 
 
 def blur_var(gray: np.ndarray) -> float:
@@ -82,18 +114,27 @@ class Enroller:
         self.blur_sigma = blur_sigma
         self.detector, self.embedder = build_backend()
 
-    def _accept(self, frame: np.ndarray, det: Detection) -> bool:
+    def _accept_reason(self, frame: np.ndarray, det: Detection) -> tuple[bool, str]:
+        """Gate one detected face; return (accepted, reason). The reason is a
+        stable slug so callers can tally why frames were dropped."""
         if det.face_px_height < self.cfg.min_face_px:
-            return False
+            return False, "too_small"
         x1, y1, x2, y2 = det.box
         crop = frame[max(0, y1) : max(1, y2), max(0, x1) : max(1, x2)]
         if crop.size == 0:
-            return False
+            return False, "empty_crop"
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
         if blur_var(gray) < self.cfg.min_blur_var:
-            return False
+            return False, "blurry"
         b = float(gray.mean())
-        return self.cfg.min_brightness <= b <= self.cfg.max_brightness
+        if b < self.cfg.min_brightness:
+            return False, "too_dark"
+        if b > self.cfg.max_brightness:
+            return False, "too_bright"
+        return True, "ok"
+
+    def _accept(self, frame: np.ndarray, det: Detection) -> bool:
+        return self._accept_reason(frame, det)[0]
 
     def _detect_embed(self, img: np.ndarray) -> list[float] | None:
         """Detect on ``img`` then embed the single face, L2-normalised.
@@ -112,8 +153,13 @@ class Enroller:
             return None
         return (vec / n).astype(float).tolist()
 
-    def enroll_frames(self, frames: list[np.ndarray]) -> list[list[float]]:
-        """Return a list of L2-normalised embeddings (as lists) for one student."""
+    def enroll_frames_detailed(self, frames: list[np.ndarray]) -> list[EmbeddingRecord]:
+        """Return per-template records (vector + pose_bin + quality + variant).
+
+        ``enroll_frames`` is the vectors-only view of this. Candidates are bucketed
+        per pose bin and the sharpest ``per_bin`` are embedded clean, then (when
+        degrade is on) as board-camera-like degraded variants — clean first, then
+        variants, preserving the original output order."""
         # Bucket the best candidates per pose bin by sharpness.
         buckets: dict[str, list[tuple[float, np.ndarray, Detection]]] = {}
         for fr in frames:
@@ -129,13 +175,17 @@ class Enroller:
             )
             buckets.setdefault(pose_bin(det, fr.shape[1]), []).append((blur_var(gray), fr, det))
 
-        embeddings: list[list[float]] = []
-        for _bin, cands in buckets.items():
+        records: list[EmbeddingRecord] = []
+        for bin_name, cands in buckets.items():
             cands.sort(key=lambda t: t[0], reverse=True)
-            for _v, fr, det in cands[: self.cfg.per_bin]:
+            for clean_q, fr, det in cands[: self.cfg.per_bin]:
                 clean = self._detect_embed(fr)
                 if clean is not None:
-                    embeddings.append(clean)
+                    records.append(
+                        EmbeddingRecord(
+                            vec=clean, pose_bin=bin_name, quality=clean_q, variant="clean"
+                        )
+                    )
                 if not self.degrade:
                     continue
                 x1, y1, x2, y2 = det.box
@@ -147,9 +197,52 @@ class Enroller:
                     if variant is None:
                         continue
                     emb = self._detect_embed(variant)
-                    if emb is not None:
-                        embeddings.append(emb)
-        return embeddings
+                    if emb is None:
+                        continue
+                    vgray = cv2.cvtColor(variant, cv2.COLOR_BGR2GRAY)
+                    records.append(
+                        EmbeddingRecord(
+                            vec=emb,
+                            pose_bin=bin_name,
+                            quality=blur_var(vgray),
+                            variant=f"degrade_{h}",
+                        )
+                    )
+        return records
+
+    def enroll_frames(self, frames: list[np.ndarray]) -> list[list[float]]:
+        """Return a list of L2-normalised embeddings (as lists) for one student."""
+        return [r.vec for r in self.enroll_frames_detailed(frames)]
+
+    def enroll_frames_report(self, frames: list[np.ndarray]) -> EnrollReport:
+        """Gate every frame with per-reason tallies, then embed the survivors.
+
+        Used by the admin upload endpoint so an operator sees WHY frames were
+        dropped (e.g. 'only frontal pose captured — ask them to turn their
+        head') rather than a bare count."""
+        reasons: Counter[str] = Counter()
+        accepted: list[np.ndarray] = []
+        for fr in frames:
+            dets = self.detector.detect(fr)
+            if len(dets) == 0:
+                reasons["no_face"] += 1
+                continue
+            if len(dets) > 1:
+                reasons["multiple_faces"] += 1
+                continue
+            ok, reason = self._accept_reason(fr, dets[0])
+            if ok:
+                accepted.append(fr)
+            else:
+                reasons[reason] += 1
+        records = self.enroll_frames_detailed(accepted)
+        return EnrollReport(
+            frames_seen=len(frames),
+            frames_accepted=len(accepted),
+            reject_reasons=dict(reasons),
+            pose_bins=sorted({r.pose_bin for r in records}),
+            records=records,
+        )
 
 
 def frames_from_video(path: str, fps: float = 5.0) -> list[np.ndarray]:

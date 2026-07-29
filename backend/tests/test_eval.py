@@ -101,3 +101,49 @@ def test_gaze_filter_measurably_cuts_false_positives() -> None:
 
 def test_fp_reduction_guards_zero_division() -> None:
     assert fp_reduction(ProctorResult(tp=1, fp=0), ProctorResult(tp=1, fp=0)) == 0.0
+
+
+def _roster_args(**kw):
+    import argparse
+
+    defaults = {"supabase": False, "enrollment": "does-not-exist.json"}
+    defaults.update(kw)
+    return argparse.Namespace(**defaults)
+
+
+def test_load_roster_from_json(tmp_path) -> None:
+    import json
+
+    from eval.run import _load_roster
+
+    p = tmp_path / "enroll.json"
+    p.write_text(json.dumps({"s1": [[1.0, 0.0, 0.0]]}))
+    store = _load_roster(_roster_args(enrollment=str(p)))
+    assert store.roster == {"s1"}
+
+
+def test_load_roster_supabase_calls_from_supabase(monkeypatch) -> None:
+    from eval import run
+
+    monkeypatch.setattr(run.settings, "supabase_url", "http://db")
+    monkeypatch.setattr(run.settings, "supabase_secret_key", "k")
+
+    rows = [{"student_id": "s1", "vec": [1.0, 0.0, 0.0]}]
+    monkeypatch.setattr(
+        run.EmbeddingStore,
+        "from_supabase",
+        lambda url, key, threshold=0.45: run.EmbeddingStore.from_rows(rows, threshold),
+    )
+    store = run._load_roster(_roster_args(supabase=True))
+    assert store.roster == {"s1"}
+
+
+def test_load_roster_supabase_unconfigured_exits(monkeypatch) -> None:
+    import pytest
+
+    from eval import run
+
+    monkeypatch.setattr(run.settings, "supabase_url", "")
+    monkeypatch.setattr(run.settings, "supabase_secret_key", "")
+    with pytest.raises(SystemExit):
+        run._load_roster(_roster_args(supabase=True))

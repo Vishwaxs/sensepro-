@@ -2,13 +2,12 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useState, useMemo } from "react";
 import { ShieldAlert, Check, X, ChevronRight, AlertTriangle } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
+import { guardRoute } from "@/lib/auth-guard";
 
 export const Route = createFileRoute("/_shell/proctor")({
+  beforeLoad: guardRoute(["teacher", "admin"]),
   head: () => ({
-    meta: [
-      { title: "Proctor Queue · SensePro+" },
-      { name: "robots", content: "noindex" },
-    ],
+    meta: [{ title: "Proctor Queue · SensePro+" }, { name: "robots", content: "noindex" }],
   }),
   component: ProctorPage,
 });
@@ -25,11 +24,51 @@ interface Flag {
 
 function mockFlags(): Flag[] {
   return [
-    { id: "PF-001", type: "phone", student: "Aarav K.", ts: "10:14:32", confidence: 0.87, session: "Data Structures", status: "awaiting_review" },
-    { id: "PF-002", type: "extra_person", student: "Meera D.", ts: "10:18:45", confidence: 0.72, session: "Data Structures", status: "awaiting_review" },
-    { id: "PF-003", type: "head_pose", student: "Rohan S.", ts: "10:21:11", confidence: 0.64, session: "Data Structures", status: "awaiting_review" },
-    { id: "PF-004", type: "phone", student: "Priya N.", ts: "10:24:58", confidence: 0.91, session: "Data Structures", status: "awaiting_review" },
-    { id: "PF-005", type: "head_pose", student: "Ishaan V.", ts: "10:32:05", confidence: 0.55, session: "Data Structures", status: "awaiting_review" },
+    {
+      id: "PF-001",
+      type: "phone",
+      student: "Aarav K.",
+      ts: "10:14:32",
+      confidence: 0.87,
+      session: "Data Structures",
+      status: "awaiting_review",
+    },
+    {
+      id: "PF-002",
+      type: "extra_person",
+      student: "Meera D.",
+      ts: "10:18:45",
+      confidence: 0.72,
+      session: "Data Structures",
+      status: "awaiting_review",
+    },
+    {
+      id: "PF-003",
+      type: "head_pose",
+      student: "Rohan S.",
+      ts: "10:21:11",
+      confidence: 0.64,
+      session: "Data Structures",
+      status: "awaiting_review",
+    },
+    {
+      id: "PF-004",
+      type: "phone",
+      student: "Priya N.",
+      ts: "10:24:58",
+      confidence: 0.91,
+      session: "Data Structures",
+      status: "awaiting_review",
+    },
+    {
+      id: "PF-005",
+      type: "head_pose",
+      student: "Ishaan V.",
+      ts: "10:32:05",
+      confidence: 0.55,
+      session: "Data Structures",
+      status: "awaiting_review",
+    },
   ];
 }
 
@@ -60,7 +99,8 @@ function ProctorPage() {
           Proctor review queue
         </h2>
         <p className="mt-1 text-sm text-[color:var(--muted)]">
-          Every flag requires human review. The system flags — you decide. Dismissed flags are logged for audit.
+          Every flag requires human review. The system flags — you decide. Dismissed flags are
+          logged for audit.
         </p>
       </header>
 
@@ -83,7 +123,9 @@ function ProctorPage() {
                   exit={{ opacity: 0, x: 20, height: 0 }}
                   onClick={() => setSelected(f.id)}
                   className={`sp-focus w-full border-b border-[color:var(--line)]/50 px-4 py-3 text-left transition-colors ${
-                    current?.id === f.id ? "bg-[color:var(--surface-2)]" : "hover:bg-[color:var(--surface-2)]/50"
+                    current?.id === f.id
+                      ? "bg-[color:var(--surface-2)]"
+                      : "hover:bg-[color:var(--surface-2)]/50"
                   }`}
                 >
                   <div className="flex items-center justify-between">
@@ -99,13 +141,15 @@ function ProctorPage() {
                     <span>{TYPE_LABELS[f.type]}</span>
                   </div>
                   <div className="mt-1.5">
-                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 font-mono-nums text-[10px] uppercase tracking-[0.16em] ${
-                      f.confidence >= 0.8
-                        ? "border-[color:var(--bad)]/40 bg-[color:var(--bad)]/10 text-[color:var(--bad)]"
-                        : f.confidence >= 0.6
-                          ? "border-[color:var(--warn)]/40 bg-[color:var(--warn)]/10 text-[color:var(--warn)]"
-                          : "border-[color:var(--muted)]/40 bg-[color:var(--surface-2)] text-[color:var(--muted)]"
-                    }`}>
+                    <span
+                      className={`inline-flex items-center rounded-full border px-2 py-0.5 font-mono-nums text-[10px] uppercase tracking-[0.16em] ${
+                        f.confidence >= 0.8
+                          ? "border-[color:var(--bad)]/40 bg-[color:var(--bad)]/10 text-[color:var(--bad)]"
+                          : f.confidence >= 0.6
+                            ? "border-[color:var(--warn)]/40 bg-[color:var(--warn)]/10 text-[color:var(--warn)]"
+                            : "border-[color:var(--muted)]/40 bg-[color:var(--surface-2)] text-[color:var(--muted)]"
+                      }`}
+                    >
                       {Math.round(f.confidence * 100)}% conf
                     </span>
                   </div>
@@ -137,11 +181,13 @@ function ProctorPage() {
                     Flagged for {current.student} at {current.ts}
                   </p>
                 </div>
-                <span className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 font-mono-nums text-[10px] uppercase tracking-[0.16em] ${
-                  current.confidence >= 0.8
-                    ? "border-[color:var(--bad)]/40 bg-[color:var(--bad)]/10 text-[color:var(--bad)]"
-                    : "border-[color:var(--warn)]/40 bg-[color:var(--warn)]/10 text-[color:var(--warn)]"
-                }`}>
+                <span
+                  className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 font-mono-nums text-[10px] uppercase tracking-[0.16em] ${
+                    current.confidence >= 0.8
+                      ? "border-[color:var(--bad)]/40 bg-[color:var(--bad)]/10 text-[color:var(--bad)]"
+                      : "border-[color:var(--warn)]/40 bg-[color:var(--warn)]/10 text-[color:var(--warn)]"
+                  }`}
+                >
                   {Math.round(current.confidence * 100)}% confidence
                 </span>
               </div>
@@ -156,7 +202,8 @@ function ProctorPage() {
 
               {/* Reminder */}
               <div className="mt-4 rounded-md border border-[color:var(--warn)]/30 bg-[color:var(--warn)]/5 p-3 text-xs text-[color:var(--warn)]">
-                <strong>Reminder:</strong> This flag is a suggestion, not a verdict. Only you can escalate or dismiss.
+                <strong>Reminder:</strong> This flag is a suggestion, not a verdict. Only you can
+                escalate or dismiss.
               </div>
 
               {/* Actions */}

@@ -1,7 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  ResponsiveContainer,
+  Tooltip,
+  CartesianGrid,
 } from "recharts";
 import { mockSessions, mockVneiTrend, mockZones } from "@/lib/data/mock";
 import { ZoneStrip } from "@/components/charts/ZoneStrip";
@@ -13,8 +19,10 @@ import { fetchZoneAggregates } from "@/lib/data/engagement";
 import type { ZoneAggregateRow } from "@/lib/data/engagement";
 import { VneiPanel } from "@/components/charts/VneiPanel";
 import { WifiOff, GaugeCircle } from "lucide-react";
+import { guardRoute } from "@/lib/auth-guard";
 
 export const Route = createFileRoute("/_shell/management")({
+  beforeLoad: guardRoute(["management", "admin"]),
   head: () => ({
     meta: [{ title: "Management · SensePro+" }],
   }),
@@ -43,20 +51,38 @@ function ManagementPage() {
 
   const trend = useMemo(() => mockVneiTrend(), []);
   const zones = useMemo(() => mockZones(), []);
-  const biasZones: ZoneAggregate[] = useMemo(() => zones.map((z) => ({
-    ...z,
-    naive_mean: z.naive_mean ?? z.vnei * (0.9 + Math.random() * 0.2),
-    n_visible: z.n_visible ?? z.n_tracked,
-    suppressed: z.n_tracked < 5,
-  })), [zones]);
+  const biasZones: ZoneAggregate[] = useMemo(
+    () =>
+      zones.map((z) => ({
+        ...z,
+        naive_mean: z.naive_mean ?? z.vnei * (0.9 + Math.random() * 0.2),
+        n_visible: z.n_visible ?? z.n_tracked,
+        suppressed: z.n_tracked < 5,
+      })),
+    [zones],
+  );
   const sessions = useMemo(() => mockSessions(), []);
   const [compareA, setCompareA] = useState(sessions[0]?.id ?? "");
   const [compareB, setCompareB] = useState(sessions[1]?.id ?? "");
 
   return (
     <div className="space-y-8">
-      {/* VNEI trend */}
-      <section className="glass-panel p-6">
+      {/* Sample data notice */}
+      <div className="rounded-md border border-dashed border-[color:var(--warn)]/50 bg-[color:var(--warn)]/5 px-4 py-3">
+        <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--warn)]">
+          ⚠ Sample data sections
+        </div>
+        <p className="mt-1 text-xs text-[color:var(--muted)]">
+          The following sections use sample data for demonstration: <strong>VNEI Trend</strong>,{" "}
+          <strong>Zone Engagement</strong>,<strong>Camera Coverage</strong>, and{" "}
+          <strong>Session Compare</strong>. The <strong>VNEI by zone (Live)</strong> panel reads
+          real data from the active session.
+        </p>
+      </div>
+
+      {/* VNEI trend — SAMPLE DATA */}
+      <section className="glass-panel relative p-6">
+        <SampleBadge />
         <header className="flex items-center justify-between">
           <div>
             <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--muted)]">
@@ -80,8 +106,16 @@ function ManagementPage() {
                 </linearGradient>
               </defs>
               <CartesianGrid stroke="rgba(255,255,255,0.06)" strokeDasharray="2 4" />
-              <XAxis dataKey="session" stroke="#6B6B78" tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }} />
-              <YAxis domain={[0, 1]} stroke="#6B6B78" tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }} />
+              <XAxis
+                dataKey="session"
+                stroke="#6B6B78"
+                tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }}
+              />
+              <YAxis
+                domain={[0, 1]}
+                stroke="#6B6B78"
+                tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }}
+              />
               <Tooltip
                 contentStyle={{
                   background: "#151519",
@@ -115,7 +149,8 @@ function ManagementPage() {
             VNEI by zone
           </div>
           <div className="mt-1 font-mono-nums text-[11px] text-[color:var(--muted)]">
-            Live from engagement_zone_aggregates. Every number declares its coverage; missing evidence is withheld.
+            Live from engagement_zone_aggregates. Every number declares its coverage; missing
+            evidence is withheld.
           </div>
         </header>
         <div className="mt-4">
@@ -126,14 +161,20 @@ function ManagementPage() {
           ) : load === "error" ? (
             <div className="flex flex-col items-center justify-center py-12 text-[color:var(--muted)]">
               <WifiOff className="mb-4 h-8 w-8 opacity-50" />
-              <div className="font-display text-lg font-medium text-[color:var(--ink)]">Could not load engagement data</div>
+              <div className="font-display text-lg font-medium text-[color:var(--ink)]">
+                Could not load engagement data
+              </div>
               <p className="mt-1 text-sm">Check your connection and role, then refresh.</p>
             </div>
           ) : rows.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-[color:var(--muted)]">
               <GaugeCircle className="mb-4 h-8 w-8 opacity-50" />
-              <div className="font-display text-lg font-medium text-[color:var(--ink)]">{session ? "No windows recorded yet" : "No live session"}</div>
-              <p className="mt-1 text-sm">Zone aggregates appear once a session runs with at least 5 tracked faces in a zone.</p>
+              <div className="font-display text-lg font-medium text-[color:var(--ink)]">
+                {session ? "No windows recorded yet" : "No live session"}
+              </div>
+              <p className="mt-1 text-sm">
+                Zone aggregates appear once a session runs with at least 5 tracked faces in a zone.
+              </p>
             </div>
           ) : (
             <VneiPanel rows={rows} />
@@ -141,8 +182,9 @@ function ManagementPage() {
         </div>
       </section>
 
-      {/* ZoneStrip — camera coverage distribution */}
-      <section className="glass-panel p-6">
+      {/* ZoneStrip — camera coverage distribution — SAMPLE DATA */}
+      <section className="glass-panel relative p-6">
+        <SampleBadge />
         <header>
           <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--muted)]">
             Camera coverage
@@ -156,8 +198,9 @@ function ManagementPage() {
         </div>
       </section>
 
-      {/* Zones */}
-      <section className="glass-panel p-6">
+      {/* Zones — SAMPLE DATA */}
+      <section className="glass-panel relative p-6">
+        <SampleBadge />
         <header className="flex items-center justify-between">
           <div>
             <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--muted)]">
@@ -266,15 +309,16 @@ function ManagementPage() {
                   <div className="mt-4">
                     <div className="font-display text-5xl font-extrabold tracking-tight text-[color:var(--ink)]">
                       {pct}
-                      <span className="ml-1 font-mono-nums text-lg text-[color:var(--muted)]">/100</span>
+                      <span className="ml-1 font-mono-nums text-lg text-[color:var(--muted)]">
+                        /100
+                      </span>
                     </div>
                     <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-[color:var(--surface)]">
                       <div
                         className="h-full rounded-full"
                         style={{
                           width: `${pct}%`,
-                          background:
-                            "linear-gradient(90deg, var(--primary), var(--accent))",
+                          background: "linear-gradient(90deg, var(--primary), var(--accent))",
                         }}
                       />
                     </div>
@@ -290,8 +334,9 @@ function ManagementPage() {
         </div>
       </section>
 
-      {/* Session compare */}
-      <section className="glass-panel p-6">
+      {/* Session compare — SAMPLE DATA */}
+      <section className="glass-panel relative p-6">
+        <SampleBadge />
         <header className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--muted)]">
@@ -312,7 +357,10 @@ function ManagementPage() {
             const s = sessions.find((x) => x.id === id);
             if (!s) return null;
             return (
-              <div key={i} className="rounded-lg border border-[color:var(--line)] bg-[color:var(--surface-2)]/60 p-5">
+              <div
+                key={i}
+                className="rounded-lg border border-[color:var(--line)] bg-[color:var(--surface-2)]/60 p-5"
+              >
                 <div className="font-mono-nums text-[10px] uppercase tracking-[0.18em] text-[color:var(--muted)]">
                   {s.id}
                 </div>
@@ -321,7 +369,10 @@ function ManagementPage() {
                 </div>
                 <div className="mt-4 grid grid-cols-3 gap-3">
                   <MiniStat label="Present" value={`${s.present_count}/${s.total_count}`} />
-                  <MiniStat label="Attendance" value={`${Math.round((s.present_count / s.total_count) * 100)}%`} />
+                  <MiniStat
+                    label="Attendance"
+                    value={`${Math.round((s.present_count / s.total_count) * 100)}%`}
+                  />
                   <MiniStat label="VNEI" value={s.vnei.toFixed(2)} accent />
                 </div>
               </div>
@@ -334,9 +385,13 @@ function ManagementPage() {
 }
 
 function SessionPick({
-  value, onChange, sessions,
+  value,
+  onChange,
+  sessions,
 }: {
-  value: string; onChange: (v: string) => void; sessions: ReturnType<typeof mockSessions>;
+  value: string;
+  onChange: (v: string) => void;
+  sessions: ReturnType<typeof mockSessions>;
 }) {
   return (
     <select
@@ -359,7 +414,12 @@ function MiniStat({ label, value, accent }: { label: string; value: string; acce
       <div className="font-mono-nums text-[10px] uppercase tracking-[0.18em] text-[color:var(--muted)]">
         {label}
       </div>
-      <div className={cn("mt-1 font-display text-xl font-extrabold tracking-tight", accent ? "text-[color:var(--accent)]" : "text-[color:var(--ink)]")}>
+      <div
+        className={cn(
+          "mt-1 font-display text-xl font-extrabold tracking-tight",
+          accent ? "text-[color:var(--accent)]" : "text-[color:var(--ink)]",
+        )}
+      >
         {value}
       </div>
     </div>
@@ -392,6 +452,15 @@ function LegendSwatch({
     <div className="flex items-center gap-2">
       <span className={cn("inline-block h-3.5 w-6 rounded-sm border", swatch)} style={style} />
       <span className="font-mono-nums text-[11px] text-[color:var(--muted)]">{label}</span>
+    </div>
+  );
+}
+
+/** Amber badge rendered in the top-right of sections that use mock data. */
+function SampleBadge() {
+  return (
+    <div className="absolute top-3 right-3 z-10 rounded-md border border-dashed border-[color:var(--warn)]/60 bg-[color:var(--warn)]/10 px-2.5 py-1 font-mono-nums text-[10px] uppercase tracking-[0.2em] text-[color:var(--warn)]">
+      Sample data — not from this deployment
     </div>
   );
 }

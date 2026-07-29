@@ -1,12 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Download } from "lucide-react";
+import { guardRoute } from "@/lib/auth-guard";
 
 export const Route = createFileRoute("/_shell/sessions")({
+  beforeLoad: guardRoute(["teacher", "admin"]),
   head: () => ({
-    meta: [
-      { title: "Sessions · SensePro+" },
-      { name: "robots", content: "noindex" },
-    ],
+    meta: [{ title: "Sessions · SensePro+" }, { name: "robots", content: "noindex" }],
   }),
   component: SessionsPage,
 });
@@ -50,20 +49,29 @@ function SessionsPage() {
           </thead>
           <tbody>
             {ROWS.map((r, i) => (
-              <tr key={i} className="border-t border-[color:var(--line)]/50 transition-colors hover:bg-[color:var(--surface-2)]/60">
-                <td className="px-4 py-3 font-mono-nums text-xs text-[color:var(--muted)]">{r.d}</td>
+              <tr
+                key={i}
+                className="border-t border-[color:var(--line)]/50 transition-colors hover:bg-[color:var(--surface-2)]/60"
+              >
+                <td className="px-4 py-3 font-mono-nums text-xs text-[color:var(--muted)]">
+                  {r.d}
+                </td>
                 <td className="px-4 py-3 text-[color:var(--ink)]">{r.t}</td>
                 <td className="px-4 py-3 font-mono-nums text-xs">{r.c}</td>
                 <td className="px-4 py-3">
-                  <span className={`inline-flex rounded-full border px-2 py-0.5 font-mono-nums text-[10px] uppercase tracking-[0.16em] ${
-                    r.m === "exam_proctor"
-                      ? "border-[color:var(--warn)]/30 bg-[color:var(--warn)]/10 text-[color:var(--warn)]"
-                      : "border-[color:var(--primary)]/30 bg-[color:var(--primary)]/10 text-[color:var(--primary)]"
-                  }`}>
+                  <span
+                    className={`inline-flex rounded-full border px-2 py-0.5 font-mono-nums text-[10px] uppercase tracking-[0.16em] ${
+                      r.m === "exam_proctor"
+                        ? "border-[color:var(--warn)]/30 bg-[color:var(--warn)]/10 text-[color:var(--warn)]"
+                        : "border-[color:var(--primary)]/30 bg-[color:var(--primary)]/10 text-[color:var(--primary)]"
+                    }`}
+                  >
                     {r.m.replace("_", " ")}
                   </span>
                 </td>
-                <td className="px-4 py-3 font-mono-nums tabular-nums text-[color:var(--ink)]">{r.r}/{r.p}</td>
+                <td className="px-4 py-3 font-mono-nums tabular-nums text-[color:var(--ink)]">
+                  {r.r}/{r.p}
+                </td>
                 <td className="px-4 py-3 text-right">
                   <button className="sp-btn sp-btn-ghost h-8 text-xs">
                     <Download className="h-3.5 w-3.5" /> PDF

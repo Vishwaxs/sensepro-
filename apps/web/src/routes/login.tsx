@@ -6,6 +6,8 @@ import { supabase } from "@/lib/supabase/client";
 import { toast } from "sonner";
 import { GlowBorder, ShimmerButton, ClickSpark, ThemeToggle, Lightfall } from "@/components/fx";
 import { useTheme } from "@/lib/theme";
+import { homeForRole } from "@/lib/auth-guard";
+import type { AppRole } from "@/lib/auth-guard";
 
 export const Route = createFileRoute("/login")({
   head: () => ({
@@ -39,18 +41,54 @@ function LoginPage() {
         if (error) throw error;
         toast.success("Account created. Check your email to confirm.");
       } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password: pwd });
+        const { data, error } = await supabase.auth.signInWithPassword({ email, password: pwd });
         if (error) throw error;
-        nav({ to: "/teacher" });
+        // Decode app_role from the JWT or query user_roles
+        let role: AppRole | null = null;
+        if (data.session?.access_token) {
+          try {
+            const payload = data.session.access_token.split(".")[1];
+            const base64 = payload.replace(/-/g, "+").replace(/_/g, "/");
+            const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), "=");
+            const claims = JSON.parse(atob(padded));
+            role = (claims.app_role as AppRole) ?? null;
+          } catch {
+            /* fallback */
+          }
+        }
+
+        if (!role && data.user?.id) {
+          try {
+            const { data: roleRow } = await supabase
+              .from("user_roles")
+              .select("app_role")
+              .eq("user_id", data.user.id)
+              .maybeSingle();
+            if (roleRow?.app_role) role = roleRow.app_role as AppRole;
+          } catch {
+            /* fallback */
+          }
+        }
+
+        const target = homeForRole(role);
+        toast.success(`Welcome back! Entering console...`);
+        nav({ to: target });
         return;
       }
-    } catch (err: any) {
-      if (err?.message?.includes("placeholder") || err?.message?.includes("fetch")) {
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("placeholder") || msg.includes("fetch")) {
         toast.info("Demo mode — Supabase not configured. Redirecting to console.");
         nav({ to: "/teacher" });
         return;
       }
-      toast.error(err?.message ?? "Authentication failed");
+      if (msg.includes("rate limit")) {
+        toast.error(
+          "Email rate limit reached. Disable 'Confirm email' in Supabase Dashboard or sign in with an existing account.",
+        );
+        return;
+      }
+      toast.error(msg || "Authentication failed");
     } finally {
       setBusy(false);
     }
@@ -68,10 +106,7 @@ function LoginPage() {
         <div className="absolute inset-0 -z-30">
           <Lightfall
             dpr={1}
-            colors={isDark
-              ? ["#F59E0B", "#D97706", "#10B981"]
-              : ["#B45309", "#92400E", "#059669"]
-            }
+            colors={isDark ? ["#F59E0B", "#D97706", "#10B981"] : ["#B45309", "#92400E", "#059669"]}
             backgroundColor={isDark ? "#07070A" : "#F8F6F1"}
             speed={0.3}
             streakCount={2}
@@ -105,18 +140,15 @@ function LoginPage() {
           transition={{ duration: 0.5, ease: [0.25, 0.46, 0.45, 0.94] }}
           className="relative z-10 w-full max-w-md"
         >
-          <GlowBorder
-            className="w-full"
-            color="var(--primary, #F59E0B)"
-            duration={5}
-            radius="20px"
-          >
+          <GlowBorder className="w-full" color="var(--primary, #F59E0B)" duration={5} radius="20px">
             <div className="glass-frosted glass-hover rounded-[20px] p-8">
               {/* Logo */}
               <div className="flex items-center gap-3">
                 <div
                   className="flex h-11 w-11 items-center justify-center rounded-lg animate-pulse-ring"
-                  style={{ background: "linear-gradient(135deg, var(--primary-deep), var(--primary))" }}
+                  style={{
+                    background: "linear-gradient(135deg, var(--primary-deep), var(--primary))",
+                  }}
                 >
                   <Command className="h-5 w-5 text-[#07070A]" />
                 </div>

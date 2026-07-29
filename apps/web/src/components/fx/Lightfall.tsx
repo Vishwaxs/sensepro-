@@ -11,7 +11,10 @@ const hexToRGB = (hex: string): [number, number, number] => {
 };
 
 const prepColors = (input?: string[]) => {
-  const base = (input && input.length ? input : ["#A6C8FF", "#5227FF", "#FF9FFC"]).slice(0, MAX_COLORS);
+  const base = (input && input.length ? input : ["#A6C8FF", "#5227FF", "#FF9FFC"]).slice(
+    0,
+    MAX_COLORS,
+  );
   const count = base.length;
   const arr: [number, number, number][] = [];
   for (let i = 0; i < MAX_COLORS; i++) arr.push(hexToRGB(base[Math.min(i, base.length - 1)]));
@@ -220,7 +223,9 @@ export function Lightfall({
   const [mounted, setMounted] = useState(false);
 
   // SSR guard — only mount on client
-  useEffect(() => { setMounted(true); }, []);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   useEffect(() => {
     if (!mounted) return;
@@ -232,114 +237,117 @@ export function Lightfall({
     import("ogl").then(({ Renderer, Program, Mesh, Triangle }) => {
       if (cancelled || !container) return;
 
-    // Cap DPR for performance (retina WebGL is expensive)
-    const effectiveDpr = Math.min(dpr ?? window.devicePixelRatio ?? 1, 1.5);
+      // Cap DPR for performance (retina WebGL is expensive)
+      const effectiveDpr = Math.min(dpr ?? window.devicePixelRatio ?? 1, 1.5);
 
-    const renderer = new Renderer({
-      dpr: effectiveDpr,
-      alpha: true,
-      antialias: true,
-    });
-    rendererRef.current = renderer;
-    const gl = renderer.gl;
-    const canvas = gl.canvas as HTMLCanvasElement;
+      const renderer = new Renderer({
+        dpr: effectiveDpr,
+        alpha: true,
+        antialias: true,
+      });
+      rendererRef.current = renderer;
+      const gl = renderer.gl;
+      const canvas = gl.canvas as HTMLCanvasElement;
 
-    canvas.style.width = "100%";
-    canvas.style.height = "100%";
-    canvas.style.display = "block";
-    container.appendChild(canvas);
+      canvas.style.width = "100%";
+      canvas.style.height = "100%";
+      canvas.style.display = "block";
+      container.appendChild(canvas);
 
-    const { arr, count, avg } = prepColors(colors);
+      const { arr, count, avg } = prepColors(colors);
 
-    const uniforms: Record<string, { value: unknown }> = {
-      iResolution: { value: [gl.drawingBufferWidth, gl.drawingBufferHeight, 1] },
-      iMouse: { value: [0, 0] },
-      iTime: { value: 0 },
-      uColor0: { value: arr[0] },
-      uColor1: { value: arr[1] },
-      uColor2: { value: arr[2] },
-      uColor3: { value: arr[3] },
-      uColor4: { value: arr[4] },
-      uColor5: { value: arr[5] },
-      uColor6: { value: arr[6] },
-      uColor7: { value: arr[7] },
-      uColorCount: { value: count },
-      uBgColor: { value: hexToRGB(backgroundColor) },
-      uMouseColor: { value: avg },
-      uSpeed: { value: speed },
-      uStreakCount: { value: Math.max(1, Math.min(16, Math.round(streakCount))) },
-      uStreakWidth: { value: streakWidth },
-      uStreakLength: { value: streakLength },
-      uGlow: { value: glow },
-      uDensity: { value: density },
-      uTwinkle: { value: twinkle },
-      uZoom: { value: zoom },
-      uBgGlow: { value: backgroundGlow },
-      uOpacity: { value: opacity },
-      uMouseEnabled: { value: mouseInteraction ? 1 : 0 },
-      uMouseStrength: { value: mouseStrength },
-      uMouseRadius: { value: mouseRadius },
-    };
+      const uniforms: Record<string, { value: unknown }> = {
+        iResolution: { value: [gl.drawingBufferWidth, gl.drawingBufferHeight, 1] },
+        iMouse: { value: [0, 0] },
+        iTime: { value: 0 },
+        uColor0: { value: arr[0] },
+        uColor1: { value: arr[1] },
+        uColor2: { value: arr[2] },
+        uColor3: { value: arr[3] },
+        uColor4: { value: arr[4] },
+        uColor5: { value: arr[5] },
+        uColor6: { value: arr[6] },
+        uColor7: { value: arr[7] },
+        uColorCount: { value: count },
+        uBgColor: { value: hexToRGB(backgroundColor) },
+        uMouseColor: { value: avg },
+        uSpeed: { value: speed },
+        uStreakCount: { value: Math.max(1, Math.min(16, Math.round(streakCount))) },
+        uStreakWidth: { value: streakWidth },
+        uStreakLength: { value: streakLength },
+        uGlow: { value: glow },
+        uDensity: { value: density },
+        uTwinkle: { value: twinkle },
+        uZoom: { value: zoom },
+        uBgGlow: { value: backgroundGlow },
+        uOpacity: { value: opacity },
+        uMouseEnabled: { value: mouseInteraction ? 1 : 0 },
+        uMouseStrength: { value: mouseStrength },
+        uMouseRadius: { value: mouseRadius },
+      };
 
-    const program = new Program(gl, { vertex, fragment, uniforms });
-    programRef.current = program;
+      const program = new Program(gl, { vertex, fragment, uniforms });
+      programRef.current = program;
 
-    const geometry = new Triangle(gl);
-    geometryRef.current = geometry;
-    const mesh = new Mesh(gl, { geometry, program });
-    meshRef.current = mesh;
+      const geometry = new Triangle(gl);
+      geometryRef.current = geometry;
+      const mesh = new Mesh(gl, { geometry, program });
+      meshRef.current = mesh;
 
-    const resize = () => {
-      const rect = container.getBoundingClientRect();
-      renderer.setSize(rect.width, rect.height);
-      (uniforms.iResolution.value as number[]) = [gl.drawingBufferWidth, gl.drawingBufferHeight, 1];
-    };
+      const resize = () => {
+        const rect = container.getBoundingClientRect();
+        renderer.setSize(rect.width, rect.height);
+        (uniforms.iResolution.value as number[]) = [
+          gl.drawingBufferWidth,
+          gl.drawingBufferHeight,
+          1,
+        ];
+      };
 
-    resize();
-    const ro = new ResizeObserver(resize);
-    ro.observe(container);
+      resize();
+      const ro = new ResizeObserver(resize);
+      ro.observe(container);
 
-    const onPointerMove = (e: PointerEvent) => {
-      const rect = canvas.getBoundingClientRect();
-      const scale = renderer.dpr || 1;
-      const x = (e.clientX - rect.left) * scale;
-      const y = (rect.height - (e.clientY - rect.top)) * scale;
-      mouseTargetRef.current = [x, y];
-      if (mouseDampening <= 0) {
-        (uniforms.iMouse.value as number[]) = [x, y];
-      }
-    };
-    if (mouseInteraction) {
-      canvas.addEventListener("pointermove", onPointerMove);
-    }
-
-    const loop = (t: number) => {
-      rafRef.current = requestAnimationFrame(loop);
-      (uniforms.iTime.value as number) = t * 0.001;
-      if (mouseDampening > 0) {
-        if (!lastTimeRef.current) lastTimeRef.current = t;
-        const dt = (t - lastTimeRef.current) / 1000;
-        lastTimeRef.current = t;
-        const tau = Math.max(1e-4, mouseDampening);
-        let factor = 1 - Math.exp(-dt / tau);
-        if (factor > 1) factor = 1;
-        const target = mouseTargetRef.current;
-        const cur = uniforms.iMouse.value as number[];
-        cur[0] += (target[0] - cur[0]) * factor;
-        cur[1] += (target[1] - cur[1]) * factor;
-      } else {
-        lastTimeRef.current = t;
-      }
-      if (!paused && programRef.current && meshRef.current) {
-        try {
-          renderer.render({ scene: meshRef.current });
-        } catch (e) {
-          console.error(e);
+      const onPointerMove = (e: PointerEvent) => {
+        const rect = canvas.getBoundingClientRect();
+        const scale = renderer.dpr || 1;
+        const x = (e.clientX - rect.left) * scale;
+        const y = (rect.height - (e.clientY - rect.top)) * scale;
+        mouseTargetRef.current = [x, y];
+        if (mouseDampening <= 0) {
+          (uniforms.iMouse.value as number[]) = [x, y];
         }
+      };
+      if (mouseInteraction) {
+        canvas.addEventListener("pointermove", onPointerMove);
       }
-    };
-    rafRef.current = requestAnimationFrame(loop);
 
+      const loop = (t: number) => {
+        rafRef.current = requestAnimationFrame(loop);
+        (uniforms.iTime.value as number) = t * 0.001;
+        if (mouseDampening > 0) {
+          if (!lastTimeRef.current) lastTimeRef.current = t;
+          const dt = (t - lastTimeRef.current) / 1000;
+          lastTimeRef.current = t;
+          const tau = Math.max(1e-4, mouseDampening);
+          let factor = 1 - Math.exp(-dt / tau);
+          if (factor > 1) factor = 1;
+          const target = mouseTargetRef.current;
+          const cur = uniforms.iMouse.value as number[];
+          cur[0] += (target[0] - cur[0]) * factor;
+          cur[1] += (target[1] - cur[1]) * factor;
+        } else {
+          lastTimeRef.current = t;
+        }
+        if (!paused && programRef.current && meshRef.current) {
+          try {
+            renderer.render({ scene: meshRef.current });
+          } catch (e) {
+            console.error(e);
+          }
+        }
+      };
+      rafRef.current = requestAnimationFrame(loop);
     }); // end of dynamic import
 
     return () => {
@@ -393,7 +401,9 @@ export function Lightfall({
       ref={containerRef}
       className={`lightfall-container ${className ?? ""}`}
       style={{
-        ...(mixBlendMode ? { mixBlendMode: mixBlendMode as React.CSSProperties["mixBlendMode"] } : {}),
+        ...(mixBlendMode
+          ? { mixBlendMode: mixBlendMode as React.CSSProperties["mixBlendMode"] }
+          : {}),
       }}
     />
   );

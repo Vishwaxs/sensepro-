@@ -22,7 +22,7 @@ export function ThemeToggle({ className = "" }: { className?: string }) {
           background: "var(--primary-glow)",
         }}
       />
-      
+
       <div className="relative z-10">
         <AnimatePresence mode="wait" initial={false}>
           <motion.div

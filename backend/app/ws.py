@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -28,10 +29,42 @@ from app.store import SessionRecorder, build_writer
 from vision.embedding_store import EmbeddingStore
 from vision.pipeline import SessionPipeline
 
+logger = logging.getLogger("sensepro.ws")
+
 router = APIRouter()
 
 
 def _load_store() -> EmbeddingStore:
+    """Load the recognition gallery: Supabase pgvector when configured (the
+    real photo + video templates), else the enrolment JSON (dev/stub loop).
+
+    A Supabase load that fails or comes back empty falls back to JSON so a
+    misconfigured DB never leaves the capture page unable to recognise anyone."""
+    if settings.supabase_enabled:
+        try:
+            store = EmbeddingStore.from_supabase(
+                settings.supabase_url,
+                settings.supabase_secret_key,
+                threshold=settings.cosine_threshold,
+            )
+            if store.roster:
+                logger.info(
+                    "roster: %d templates for %d students from Supabase pgvector",
+                    len(store._ids),
+                    len(store.roster),
+                )
+                return store
+            logger.warning(
+                "Supabase embeddings table is empty — falling back to %s",
+                settings.enrollment_json,
+            )
+        except Exception as exc:  # noqa: BLE001 — never leave capture without a gallery
+            logger.warning(
+                "Supabase roster load failed (%s) — falling back to %s",
+                exc,
+                settings.enrollment_json,
+            )
+
     path = Path(settings.enrollment_json)
     if path.exists():
         return EmbeddingStore.from_json(path, threshold=settings.cosine_threshold)
@@ -48,6 +81,53 @@ def _decode_jpg(b64: str) -> np.ndarray | None:
     return img
 
 
+class _QRVerifier:
+    """Satisfies open QR verification windows when a windowed student's enrolled
+    face is recognised, writing a via='qr' presence row through the existing
+    write-path. Purely additive to passive recognition: it is disabled unless
+    the writer is a real Supabase writer, refreshes open windows on an interval
+    (not every frame), and swallows its own errors so the capture loop never
+    stalls. Window expiry writes nothing."""
+
+    def __init__(self, writer: object, session_id: str, refresh_s: float = 3.0) -> None:
+        self.writer = writer
+        self.session_id = session_id
+        self.refresh_s = refresh_s
+        self._targets: dict[str, str] = {}  # student_id -> window_id
+        self._last_refresh = -1e9
+        self._enabled = hasattr(writer, "open_verification_targets")
+
+    def observe(self, recognized_ids: set[str], at: datetime, ts: float) -> None:
+        if not self._enabled:
+            return
+        if ts - self._last_refresh >= self.refresh_s:
+            self._last_refresh = ts
+            try:
+                self._targets = self.writer.open_verification_targets(self.session_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("qr targets refresh failed: %s", exc)
+                self._targets = {}
+        for sid in recognized_ids & set(self._targets):
+            window_id = self._targets.pop(sid)
+            try:
+                if self.writer.satisfy_window(window_id):
+                    self.writer.write_qr_presence(self.session_id, sid, at)
+                    self.writer.append_audit(
+                        "system:capture",
+                        "qr_verified",
+                        {"session_id": self.session_id, "student_id": sid, "window_id": window_id},
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("qr verify write failed: %s (%s)", sid, exc)
+
+    def close(self, at: datetime) -> None:
+        if self._enabled and hasattr(self.writer, "close_open_qr_presence"):
+            try:
+                self.writer.close_open_qr_presence(self.session_id, at)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("qr presence close failed: %s", exc)
+
+
 @router.websocket("/ws/capture")
 async def capture(ws: WebSocket) -> None:
     await ws.accept()
@@ -61,16 +141,19 @@ async def capture(ws: WebSocket) -> None:
     # real class_sessions row. Without one, recognition still runs but nothing
     # persists — useful for the offline stub loop.
     recorder: SessionRecorder | None = None
+    qr: _QRVerifier | None = None
     session_start = datetime.now(timezone.utc)
 
     def _attach(session_id: str | None) -> None:
-        nonlocal recorder
+        nonlocal recorder, qr
         if session_id and recorder is None:
+            writer = build_writer()
             recorder = SessionRecorder(
-                writer=build_writer(),
+                writer=writer,
                 session_id=session_id,
                 session_start=session_start,
             )
+            qr = _QRVerifier(writer, session_id)
 
     _attach(ws.query_params.get("session_id"))
 
@@ -84,6 +167,8 @@ async def capture(ws: WebSocket) -> None:
                 if recorder is not None:
                     # DB writes are sync httpx — keep them off the event loop
                     await run_in_threadpool(recorder.close, ts)
+                if qr is not None:
+                    await run_in_threadpool(qr.close, datetime.now(timezone.utc))
                 await ws.send_json({"type": "session_ended", "ts": ts})
                 break
             if msg.get("type") != "frame":
@@ -98,6 +183,10 @@ async def capture(ws: WebSocket) -> None:
             if recorder is not None and result["transitions"]:
                 transitions = [(t["student_id"], t["state"]) for t in result["transitions"]]
                 await run_in_threadpool(recorder.record, transitions, ts)
+            if qr is not None:
+                recognized = {f["student_id"] for f in result["faces"] if f.get("student_id")}
+                if recognized:
+                    await run_in_threadpool(qr.observe, recognized, datetime.now(timezone.utc), ts)
             await ws.send_json(result)
     except WebSocketDisconnect:
         return

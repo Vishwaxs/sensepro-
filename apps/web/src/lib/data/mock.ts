@@ -11,13 +11,41 @@ import type {
 } from "./types";
 
 const INDIAN_NAMES = [
-  "Aarav Sharma", "Diya Patel", "Ishaan Nair", "Ananya Reddy", "Vihaan Iyer",
-  "Meera Krishnan", "Kabir Menon", "Saanvi Rao", "Arjun Chatterjee", "Riya Bose",
-  "Rohan Gupta", "Priya Balakrishnan", "Aditya Verma", "Neha Deshpande", "Krishna Pillai",
-  "Sneha Joshi", "Aryan Malhotra", "Kavya Subramanian", "Devansh Kulkarni", "Aisha Khan",
-  "Yash Agarwal", "Tanvi Bhatt", "Shaurya Mehta", "Anika Ghosh", "Reyansh Kapoor",
-  "Ira Sundaram", "Advait Chowdhury", "Myra Bhattacharya", "Vivaan Naidu", "Zara Ansari",
-  "Karthik Raman", "Pooja Varghese", "Nikhil Saxena", "Aditi Prasad", "Om Trivedi",
+  "Aarav Sharma",
+  "Diya Patel",
+  "Ishaan Nair",
+  "Ananya Reddy",
+  "Vihaan Iyer",
+  "Meera Krishnan",
+  "Kabir Menon",
+  "Saanvi Rao",
+  "Arjun Chatterjee",
+  "Riya Bose",
+  "Rohan Gupta",
+  "Priya Balakrishnan",
+  "Aditya Verma",
+  "Neha Deshpande",
+  "Krishna Pillai",
+  "Sneha Joshi",
+  "Aryan Malhotra",
+  "Kavya Subramanian",
+  "Devansh Kulkarni",
+  "Aisha Khan",
+  "Yash Agarwal",
+  "Tanvi Bhatt",
+  "Shaurya Mehta",
+  "Anika Ghosh",
+  "Reyansh Kapoor",
+  "Ira Sundaram",
+  "Advait Chowdhury",
+  "Myra Bhattacharya",
+  "Vivaan Naidu",
+  "Zara Ansari",
+  "Karthik Raman",
+  "Pooja Varghese",
+  "Nikhil Saxena",
+  "Aditi Prasad",
+  "Om Trivedi",
 ];
 
 const REG_PREFIX = "23MCA";
@@ -27,8 +55,7 @@ export function mockRoster(): RosterEntry[] {
   return INDIAN_NAMES.map((name, i) => {
     const roll = 1001 + i;
     const r = Math.random();
-    const state: RosterEntry["state"] =
-      r < 0.62 ? "PRESENT" : r < 0.82 ? "UNVERIFIED" : "ABSENT";
+    const state: RosterEntry["state"] = r < 0.62 ? "PRESENT" : r < 0.82 ? "UNVERIFIED" : "ABSENT";
     return {
       student_id: `s_${roll}`,
       name,
@@ -110,8 +137,14 @@ export function mockConsents(): ConsentRecord[] {
 export function mockAudit(): AuditEntry[] {
   // SWAP: supabase query — audit log with hash chain
   const actions = [
-    "session.start", "session.end", "roster.export", "flag.dismiss",
-    "flag.uphold", "consent.sign", "user.role.grant", "deletion.request",
+    "session.start",
+    "session.end",
+    "roster.export",
+    "flag.dismiss",
+    "flag.uphold",
+    "consent.sign",
+    "user.role.grant",
+    "deletion.request",
   ];
   const entries: AuditEntry[] = [];
   let prev = "000000000000";
@@ -134,10 +167,34 @@ export function mockAudit(): AuditEntry[] {
 export function mockDevices(): DeviceRow[] {
   // SWAP: supabase query — capture clients
   return [
-    { id: "cap_201", label: "Board · Room 201", room: "Room 201", last_seen: new Date(Date.now() - 12_000).toISOString(), status: "online" },
-    { id: "cap_202", label: "Board · Room 202", room: "Room 202", last_seen: new Date(Date.now() - 90_000).toISOString(), status: "idle" },
-    { id: "cap_204", label: "Board · Room 204", room: "Room 204", last_seen: new Date(Date.now() - 20 * 60_000).toISOString(), status: "offline" },
-    { id: "cap_lab1", label: "Lab-1 Kiosk", room: "Lab 1", last_seen: new Date(Date.now() - 6_000).toISOString(), status: "online" },
+    {
+      id: "cap_201",
+      label: "Board · Room 201",
+      room: "Room 201",
+      last_seen: new Date(Date.now() - 12_000).toISOString(),
+      status: "online",
+    },
+    {
+      id: "cap_202",
+      label: "Board · Room 202",
+      room: "Room 202",
+      last_seen: new Date(Date.now() - 90_000).toISOString(),
+      status: "idle",
+    },
+    {
+      id: "cap_204",
+      label: "Board · Room 204",
+      room: "Room 204",
+      last_seen: new Date(Date.now() - 20 * 60_000).toISOString(),
+      status: "offline",
+    },
+    {
+      id: "cap_lab1",
+      label: "Lab-1 Kiosk",
+      room: "Lab 1",
+      last_seen: new Date(Date.now() - 6_000).toISOString(),
+      status: "online",
+    },
   ];
 }
 

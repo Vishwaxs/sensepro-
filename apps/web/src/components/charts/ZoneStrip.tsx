@@ -43,7 +43,10 @@ export function ZoneStrip({ zones }: { zones: ZoneAggregate[] }) {
             <div
               key={z.zone}
               className="grid min-w-16 place-items-center"
-              style={{ width: `${(z.n_visible / Math.max(1, total)) * 100}%`, backgroundColor: colorOf(z) }}
+              style={{
+                width: `${(z.n_visible / Math.max(1, total)) * 100}%`,
+                backgroundColor: colorOf(z),
+              }}
             >
               <span className="font-mono-nums text-[11px] font-medium text-white">
                 {z.zone} · {z.n_visible}

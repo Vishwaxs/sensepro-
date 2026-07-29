@@ -168,6 +168,21 @@ class SupabaseWriter:
             timeout=10.0,
         )
 
+    def close(self) -> None:
+        self._client.close()
+
+    def count_rows(self, table: str, params: dict | None = None) -> int | None:
+        """Exact row count via PostgREST's Content-Range header. Diagnostic use
+        (the /healthz preflight) — every table we count has an id column."""
+        r = self._client.get(
+            f"/{table}",
+            params={"select": "id", **(params or {})},
+            headers={"Prefer": "count=exact", "Range-Unit": "items", "Range": "0-0"},
+        )
+        r.raise_for_status()
+        total = r.headers.get("content-range", "").split("/")[-1]
+        return int(total) if total.isdigit() else None
+
     def create_session(
         self, class_section: str, subject: str | None, mode: str
     ) -> tuple[str, datetime]:
@@ -233,6 +248,216 @@ class SupabaseWriter:
         except Exception as exc:  # noqa: BLE001
             logger.warning("zone aggregate dropped: %s (%s)", row.zone, exc)
 
+    # ---------- QR absentee fallback (service-role) ----------
+    def issue_qr_token(self, session_id: str, ttl_s: int) -> dict:
+        """Invalidate any outstanding unused token for the session, then mint a
+        fresh single-use one. Only one token is ever live at a time (rotation)."""
+        self._invalidate_tokens(session_id)
+        expires = datetime.now(timezone.utc) + timedelta(seconds=ttl_s)
+        r = self._client.post(
+            "/qr_tokens",
+            headers={"Prefer": "return=representation"},
+            json={"session_id": session_id, "expires_at": _iso(expires)},
+        )
+        r.raise_for_status()
+        row = r.json()[0]
+        return {"token": row["token"], "expires_at": row["expires_at"]}
+
+    def _invalidate_tokens(self, session_id: str) -> None:
+        """Expire all still-claimable tokens for the session (rotation / close)."""
+        self._client.patch(
+            "/qr_tokens",
+            params={"session_id": f"eq.{session_id}", "used_at": "is.null"},
+            json={"expires_at": _iso(datetime.now(timezone.utc))},
+        ).raise_for_status()
+
+    def close_qr(self, session_id: str) -> None:
+        """Teacher closes the absentee window: no outstanding token stays claimable."""
+        self._invalidate_tokens(session_id)
+
+    def get_token(self, token: str) -> dict | None:
+        r = self._client.get(
+            "/qr_tokens",
+            params={
+                "token": f"eq.{token}",
+                "select": "session_id,expires_at,used_at",
+                "limit": "1",
+            },
+        )
+        r.raise_for_status()
+        rows = r.json()
+        return rows[0] if rows else None
+
+    def claim_qr_token(self, token: str, student_id: str, window_ttl_s: int) -> dict | None:
+        """Atomic single-winner claim: mark the token used only if it is still
+        unused and unexpired, in one UPDATE. Returns the opened verification
+        window, or None if the token was already used / expired / unknown.
+
+        Postgres serialises concurrent UPDATEs on the row, so exactly one caller
+        can flip used_at from NULL — the WHERE re-checks under the row lock."""
+        now = datetime.now(timezone.utc)
+        r = self._client.patch(
+            "/qr_tokens",
+            params={
+                "token": f"eq.{token}",
+                "used_at": "is.null",
+                "expires_at": f"gt.{_iso(now)}",
+            },
+            headers={"Prefer": "return=representation"},
+            json={"used_at": _iso(now), "used_by": student_id},
+        )
+        r.raise_for_status()
+        rows = r.json()
+        if not rows:
+            return None  # lost the race, expired, or unknown token
+        session_id = rows[0]["session_id"]
+        expires = now + timedelta(seconds=window_ttl_s)
+        w = self._client.post(
+            "/verification_windows",
+            headers={"Prefer": "return=representation"},
+            json={
+                "session_id": session_id,
+                "student_id": student_id,
+                "expires_at": _iso(expires),
+            },
+        )
+        w.raise_for_status()
+        win = w.json()[0]
+        return {"window_id": win["id"], "session_id": session_id, "expires_at": win["expires_at"]}
+
+    def open_verification_targets(self, session_id: str) -> dict[str, str]:
+        """student_id -> window_id for windows open and unexpired right now."""
+        now = datetime.now(timezone.utc)
+        r = self._client.get(
+            "/verification_windows",
+            params={
+                "session_id": f"eq.{session_id}",
+                "satisfied_at": "is.null",
+                "expires_at": f"gt.{_iso(now)}",
+                "select": "id,student_id",
+            },
+        )
+        r.raise_for_status()
+        return {row["student_id"]: row["id"] for row in r.json()}
+
+    def get_window(self, window_id: str) -> dict | None:
+        """One verification window by id — for the on-phone selfie path to check
+        ownership and expiry before it satisfies the window."""
+        r = self._client.get(
+            "/verification_windows",
+            params={
+                "id": f"eq.{window_id}",
+                "select": "id,session_id,student_id,expires_at,satisfied_at",
+                "limit": "1",
+            },
+        )
+        r.raise_for_status()
+        rows = r.json()
+        return rows[0] if rows else None
+
+    def student_templates(self, student_id: str) -> list[dict]:
+        """Every enrolled embedding for one student ({'student_id','vec'} rows),
+        for a 1:1 self-verification match. Service-role read of the gallery the
+        backend owns — never a browser read path."""
+        r = self._client.get(
+            "/embeddings",
+            params={"student_id": f"eq.{student_id}", "select": "student_id,vec"},
+        )
+        r.raise_for_status()
+        return r.json()
+
+    def satisfy_window(self, window_id: str) -> bool:
+        """Close one window (single-winner). True if this call satisfied it."""
+        r = self._client.patch(
+            "/verification_windows",
+            params={"id": f"eq.{window_id}", "satisfied_at": "is.null"},
+            headers={"Prefer": "return=representation"},
+            json={"satisfied_at": _iso(datetime.now(timezone.utc))},
+        )
+        r.raise_for_status()
+        return bool(r.json())
+
+    def write_qr_presence(self, session_id: str, student_id: str, at: datetime) -> None:
+        """Presence row from the QR fallback — tagged via='qr' for the audit trail."""
+        self._client.post(
+            "/presence_intervals",
+            json={
+                "session_id": session_id,
+                "student_id": student_id,
+                "state": "PRESENT",
+                "started_at": _iso(at),
+                "via": "qr",
+            },
+        ).raise_for_status()
+
+    def close_open_qr_presence(self, session_id: str, at: datetime) -> None:
+        """Close any still-open via='qr' rows at session end (the FSM recorder
+        only closes the intervals it opened, not these fallback rows)."""
+        try:
+            self._client.patch(
+                "/presence_intervals",
+                params={
+                    "session_id": f"eq.{session_id}",
+                    "via": "eq.qr",
+                    "ended_at": "is.null",
+                },
+                json={"ended_at": _iso(at)},
+            ).raise_for_status()
+        except Exception as exc:  # noqa: BLE001 — best-effort at teardown
+            logger.warning("close qr presence failed: %s (%s)", session_id, exc)
+
+    def student_by_auth_uid(self, auth_uid: str) -> dict | None:
+        r = self._client.get(
+            "/students",
+            params={
+                "auth_uid": f"eq.{auth_uid}",
+                "select": "id,reg_no,class_section",
+                "limit": "1",
+            },
+        )
+        r.raise_for_status()
+        rows = r.json()
+        return rows[0] if rows else None
+
+    def active_session(self, session_id: str) -> dict | None:
+        r = self._client.get(
+            "/class_sessions",
+            params={
+                "id": f"eq.{session_id}",
+                "ends_at": "is.null",
+                "select": "id,class_section,mode",
+                "limit": "1",
+            },
+        )
+        r.raise_for_status()
+        rows = r.json()
+        return rows[0] if rows else None
+
+    def has_open_present(self, session_id: str, student_id: str) -> bool:
+        r = self._client.get(
+            "/presence_intervals",
+            params={
+                "session_id": f"eq.{session_id}",
+                "student_id": f"eq.{student_id}",
+                "state": "eq.PRESENT",
+                "ended_at": "is.null",
+                "select": "id",
+                "limit": "1",
+            },
+        )
+        r.raise_for_status()
+        return bool(r.json())
+
+    def append_audit(self, actor: str, action: str, payload: dict) -> None:
+        """Append to the hash-chained audit_log. Best-effort: a failed audit
+        write is logged, never blocks the action it records."""
+        try:
+            self._client.post(
+                "/audit_log", json={"actor": actor, "action": action, "payload": payload}
+            ).raise_for_status()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("audit append failed: %s (%s)", action, exc)
+
     def _ensure_default_device(self) -> str:
         """class_sessions.device_id is NOT NULL but browser capture has no
         hardware row; reuse a single 'browser-capture' device."""
@@ -255,13 +480,44 @@ class SupabaseWriter:
 
 def build_writer() -> PresenceWriter:
     """Real writer when Supabase is configured, else the no-op. Callers hold
-    the writer for their own lifetime (one per WS connection / HTTP request)."""
+    the writer for their own lifetime (one per WS connection / HTTP request).
+
+    If the credentials are present but fail a quick health check (e.g. 401),
+    fall back to the no-op writer so the capture loop is never blocked."""
     from app.config import settings
 
     if settings.supabase_enabled:
-        return SupabaseWriter(url=settings.supabase_url, key=settings.supabase_secret_key)
+        try:
+            writer = SupabaseWriter(url=settings.supabase_url, key=settings.supabase_secret_key)
+            # Quick connectivity check — hit a lightweight endpoint
+            writer._client.get("/", params={"limit": "0"})
+            return writer
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Supabase auth failed (%s); falling back to no-op writer. "
+                "Check SUPABASE_SECRET_KEY — PostgREST needs the service_role JWT, "
+                "not the sb_secret_ management key.",
+                exc,
+            )
+            return NoopWriter()
     logger.info("presence write-path: Supabase not configured, using no-op writer")
     return NoopWriter()
+
+
+class SupabaseNotConfigured(RuntimeError):
+    """Raised when a Supabase-only path (e.g. QR fallback) has no credentials."""
+
+
+def require_supabase_writer() -> SupabaseWriter:
+    """A real service-role writer, or raise. Unlike build_writer, this never
+    falls back to the no-op writer: the QR fallback has no offline meaning."""
+    from app.config import settings
+
+    if not settings.supabase_enabled:
+        raise SupabaseNotConfigured(
+            "This endpoint needs SUPABASE_URL + SUPABASE_SECRET_KEY (service role)."
+        )
+    return SupabaseWriter(url=settings.supabase_url, key=settings.supabase_secret_key)
 
 
 @dataclass

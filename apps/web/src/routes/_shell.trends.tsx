@@ -1,15 +1,21 @@
 import { createFileRoute } from "@tanstack/react-router";
 import {
-  ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip,
-  CartesianGrid, AreaChart, Area,
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  CartesianGrid,
+  AreaChart,
+  Area,
 } from "recharts";
+import { guardRoute } from "@/lib/auth-guard";
 
 export const Route = createFileRoute("/_shell/trends")({
+  beforeLoad: guardRoute(["management", "admin"]),
   head: () => ({
-    meta: [
-      { title: "Trends · SensePro+" },
-      { name: "robots", content: "noindex" },
-    ],
+    meta: [{ title: "Trends · SensePro+" }, { name: "robots", content: "noindex" }],
   }),
   component: TrendsPage,
 });
@@ -44,7 +50,8 @@ function TrendsPage() {
           Aggregate trends
         </h2>
         <p className="mt-1 text-sm text-[color:var(--muted)]">
-          Class-level attendance, VNEI, and camera coverage over the last two weeks. Never per student, never emotion.
+          Class-level attendance, VNEI, and camera coverage over the last two weeks. Never per
+          student, never emotion.
         </p>
       </header>
 
@@ -53,10 +60,24 @@ function TrendsPage() {
           <ResponsiveContainer>
             <LineChart data={days} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
               <CartesianGrid stroke="var(--line)" strokeDasharray="3 4" vertical={false} />
-              <XAxis dataKey="d" stroke="var(--muted)" tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }} />
-              <YAxis stroke="var(--muted)" tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }} domain={[0.4, 0.9]} />
+              <XAxis
+                dataKey="d"
+                stroke="var(--muted)"
+                tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }}
+              />
+              <YAxis
+                stroke="var(--muted)"
+                tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }}
+                domain={[0.4, 0.9]}
+              />
               <Tooltip contentStyle={tooltipStyle} />
-              <Line type="monotone" dataKey="vnei" stroke="var(--primary)" strokeWidth={2.5} dot={{ r: 3, fill: "var(--primary)" }} />
+              <Line
+                type="monotone"
+                dataKey="vnei"
+                stroke="var(--primary)"
+                strokeWidth={2.5}
+                dot={{ r: 3, fill: "var(--primary)" }}
+              />
             </LineChart>
           </ResponsiveContainer>
         </ChartCard>
@@ -71,8 +92,16 @@ function TrendsPage() {
                 </linearGradient>
               </defs>
               <CartesianGrid stroke="var(--line)" strokeDasharray="3 4" vertical={false} />
-              <XAxis dataKey="d" stroke="var(--muted)" tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }} />
-              <YAxis stroke="var(--muted)" tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }} domain={[0.7, 1]} />
+              <XAxis
+                dataKey="d"
+                stroke="var(--muted)"
+                tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }}
+              />
+              <YAxis
+                stroke="var(--muted)"
+                tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }}
+                domain={[0.7, 1]}
+              />
               <Tooltip contentStyle={tooltipStyle} />
               <Area dataKey="attendance" stroke="var(--ok)" strokeWidth={2} fill="url(#g1)" />
             </AreaChart>
@@ -83,10 +112,24 @@ function TrendsPage() {
           <ResponsiveContainer>
             <LineChart data={days} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
               <CartesianGrid stroke="var(--line)" strokeDasharray="3 4" vertical={false} />
-              <XAxis dataKey="d" stroke="var(--muted)" tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }} />
-              <YAxis stroke="var(--muted)" tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }} domain={[0.5, 1]} />
+              <XAxis
+                dataKey="d"
+                stroke="var(--muted)"
+                tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }}
+              />
+              <YAxis
+                stroke="var(--muted)"
+                tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }}
+                domain={[0.5, 1]}
+              />
               <Tooltip contentStyle={tooltipStyle} />
-              <Line type="monotone" dataKey="coverage" stroke="var(--accent)" strokeWidth={2.5} dot={{ r: 3, fill: "var(--accent)" }} />
+              <Line
+                type="monotone"
+                dataKey="coverage"
+                stroke="var(--accent)"
+                strokeWidth={2.5}
+                dot={{ r: 3, fill: "var(--accent)" }}
+              />
             </LineChart>
           </ResponsiveContainer>
         </ChartCard>
@@ -99,9 +142,9 @@ function TrendsPage() {
             What "coverage" means
           </h3>
           <p className="mt-3 text-sm leading-relaxed text-[color:var(--muted)]">
-            Coverage is the fraction of enrolled, consented students the classroom camera can actually see during a
-            session. When it drops below 70%, VNEI carries a caution badge — the model refuses to pretend it sees
-            what it doesn't.
+            Coverage is the fraction of enrolled, consented students the classroom camera can
+            actually see during a session. When it drops below 70%, VNEI carries a caution badge —
+            the model refuses to pretend it sees what it doesn't.
           </p>
         </div>
       </div>
@@ -109,12 +152,25 @@ function TrendsPage() {
   );
 }
 
-function ChartCard({ title, color, children }: { title: string; color: string; children: React.ReactNode }) {
+function ChartCard({
+  title,
+  color,
+  children,
+}: {
+  title: string;
+  color: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="glass-panel p-6">
       <div className="mb-3 flex items-center justify-between">
-        <h3 className="font-display text-lg font-extrabold tracking-tight text-[color:var(--ink)]">{title}</h3>
-        <span className="h-2 w-2 rounded-full" style={{ background: color, boxShadow: `0 0 12px ${color}` }} />
+        <h3 className="font-display text-lg font-extrabold tracking-tight text-[color:var(--ink)]">
+          {title}
+        </h3>
+        <span
+          className="h-2 w-2 rounded-full"
+          style={{ background: color, boxShadow: `0 0 12px ${color}` }}
+        />
       </div>
       <div className="h-56">{children}</div>
     </div>

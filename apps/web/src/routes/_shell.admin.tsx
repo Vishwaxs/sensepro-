@@ -2,11 +2,11 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { AlertTriangle, Check, Link2, ShieldCheck, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import {
-  mockAudit, mockConsents, mockDevices, mockUsers,
-} from "@/lib/data/mock";
+import { mockAudit, mockConsents, mockDevices, mockUsers } from "@/lib/data/mock";
+import { guardRoute } from "@/lib/auth-guard";
 
 export const Route = createFileRoute("/_shell/admin")({
+  beforeLoad: guardRoute(["admin"]),
   head: () => ({
     meta: [{ title: "Admin · SensePro+" }],
   }),
@@ -23,7 +23,9 @@ function AdminPage() {
   const consents = useMemo(() => mockConsents(), []);
   const audit = useMemo(() => mockAudit(), []);
   const [deletionQ, setDeletionQ] = useState(
-    consents.slice(0, 3).map((c) => ({ ...c, requested_at: new Date(Date.now() - 3600_000).toISOString() })),
+    consents
+      .slice(0, 3)
+      .map((c) => ({ ...c, requested_at: new Date(Date.now() - 3600_000).toISOString() })),
   );
 
   return (
@@ -138,14 +140,16 @@ function AdminPage() {
             <table className="w-full">
               <thead>
                 <tr className="border-b border-[color:var(--line)]">
-                  {["Seq", "Time", "Actor", "Action", "prev_hash", "", "hash", "Chain"].map((h, i) => (
-                    <th
-                      key={i}
-                      className="px-3 py-2 text-left font-mono-nums text-[10px] uppercase tracking-[0.16em] text-[color:var(--muted)]"
-                    >
-                      {h}
-                    </th>
-                  ))}
+                  {["Seq", "Time", "Actor", "Action", "prev_hash", "", "hash", "Chain"].map(
+                    (h, i) => (
+                      <th
+                        key={i}
+                        className="px-3 py-2 text-left font-mono-nums text-[10px] uppercase tracking-[0.16em] text-[color:var(--muted)]"
+                      >
+                        {h}
+                      </th>
+                    ),
+                  )}
                 </tr>
               </thead>
               <tbody className="font-mono-nums text-xs">
@@ -196,7 +200,15 @@ function AdminPage() {
   );
 }
 
-function Panel({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
+function Panel({
+  title,
+  hint,
+  children,
+}: {
+  title: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
   return (
     <section className="glass-panel overflow-hidden">
       <header className="flex items-center justify-between border-b border-[color:var(--line)] px-5 py-4">
@@ -228,7 +240,10 @@ function Table({ head, rows }: { head: string[]; rows: React.ReactNode[][] }) {
         </thead>
         <tbody>
           {rows.map((row, i) => (
-            <tr key={i} className="border-b border-[color:var(--line)]/60 hover:bg-[color:var(--surface-2)]/40">
+            <tr
+              key={i}
+              className="border-b border-[color:var(--line)]/60 hover:bg-[color:var(--surface-2)]/40"
+            >
               {row.map((cell, j) => (
                 <td key={j} className="px-4 py-2.5 text-sm">
                   {cell}
@@ -246,7 +261,10 @@ function StatusDot({ status }: { status: "online" | "idle" | "offline" }) {
   const color =
     status === "online" ? "var(--ok)" : status === "idle" ? "var(--warn)" : "var(--muted)";
   return (
-    <span className="inline-flex items-center gap-2 font-mono-nums text-[11px] uppercase tracking-wider" style={{ color }}>
+    <span
+      className="inline-flex items-center gap-2 font-mono-nums text-[11px] uppercase tracking-wider"
+      style={{ color }}
+    >
       <span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
       {status}
     </span>
@@ -336,7 +354,8 @@ function DeletionRow({
       </div>
       {stage === "confirm" && (
         <div className="mt-3 rounded-md border border-[color:var(--bad)]/30 bg-[color:var(--bad)]/5 px-3 py-2 font-mono-nums text-[11px] text-[color:var(--muted)]">
-          Confirms deletion of biometric templates, embeddings, and linked attendance derivatives for
+          Confirms deletion of biometric templates, embeddings, and linked attendance derivatives
+          for
           <span className="text-[color:var(--ink)]"> {reg_no}</span>. Audit entry will be appended.
         </div>
       )}

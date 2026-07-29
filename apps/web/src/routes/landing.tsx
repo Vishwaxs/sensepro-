@@ -1,12 +1,14 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { motion } from "framer-motion";
+import { ShieldCheck, Eye, Brain, Lock, ChevronRight, ArrowRight, Zap } from "lucide-react";
 import {
-  ShieldCheck, Eye, Brain, Lock,
-  ChevronRight, ArrowRight, Zap,
-} from "lucide-react";
-import {
-  SpotlightCard, TextReveal, ShimmerButton,
-  MagneticHover, ClickSpark, ThemeToggle, Lightfall,
+  SpotlightCard,
+  TextReveal,
+  ShimmerButton,
+  MagneticHover,
+  ClickSpark,
+  ThemeToggle,
+  Lightfall,
 } from "@/components/fx";
 import { useTheme } from "@/lib/theme";
 
@@ -14,9 +16,16 @@ export const Route = createFileRoute("/landing")({
   head: () => ({
     meta: [
       { title: "SensePro+ · Classroom Command Center" },
-      { name: "description", content: "Browser-based attendance, proctor review, and fairness-aware engagement analytics for higher education." },
+      {
+        name: "description",
+        content:
+          "Browser-based attendance, proctor review, and fairness-aware engagement analytics for higher education.",
+      },
       { property: "og:title", content: "SensePro+ · Classroom Command Center" },
-      { property: "og:description", content: "Mission-control for the classroom — privacy-first, bias-aware." },
+      {
+        property: "og:description",
+        content: "Mission-control for the classroom — privacy-first, bias-aware.",
+      },
     ],
   }),
   component: LandingPage,
@@ -24,19 +33,25 @@ export const Route = createFileRoute("/landing")({
 
 const PILLARS = [
   {
-    icon: Eye, title: "Browser-based capture",
+    icon: Eye,
+    title: "Browser-based capture",
     desc: "No hardware, no drivers. Any webcam in Chrome ships frames to the inference server over a WebSocket.",
-    stat: "0ms", statLabel: "hardware required",
+    stat: "0ms",
+    statLabel: "hardware required",
   },
   {
-    icon: Brain, title: "Fairness-aware analytics",
+    icon: Brain,
+    title: "Fairness-aware analytics",
     desc: "VNEI corrects for visibility bias. Zone aggregates suppress when k < 5. Never per-student engagement.",
-    stat: "k<5", statLabel: "suppression threshold",
+    stat: "k<5",
+    statLabel: "suppression threshold",
   },
   {
-    icon: Lock, title: "Privacy by design",
+    icon: Lock,
+    title: "Privacy by design",
     desc: "Frames never stored. Embeddings purged post-enrollment. Hash-chained audit trail. DPDP-aligned consent.",
-    stat: "0", statLabel: "frames stored",
+    stat: "0",
+    statLabel: "frames stored",
   },
 ];
 
@@ -50,10 +65,30 @@ const INVARIANTS = [
 ];
 
 const ROLES = [
-  { label: "Teacher", desc: "Live roster, session PDF, proctor review queue.", mono: "TCH", color: "var(--primary)" },
-  { label: "Management", desc: "VNEI trends, zone engagement, session compare.", mono: "MGT", color: "var(--accent)" },
-  { label: "Admin", desc: "Devices, users, consent registry, audit chain.", mono: "ADM", color: "var(--warn)" },
-  { label: "Student", desc: "Attendance history, consent status, data deletion.", mono: "ME", color: "var(--ok)" },
+  {
+    label: "Teacher",
+    desc: "Live roster, session PDF, proctor review queue.",
+    mono: "TCH",
+    color: "var(--primary)",
+  },
+  {
+    label: "Management",
+    desc: "VNEI trends, zone engagement, session compare.",
+    mono: "MGT",
+    color: "var(--accent)",
+  },
+  {
+    label: "Admin",
+    desc: "Devices, users, consent registry, audit chain.",
+    mono: "ADM",
+    color: "var(--warn)",
+  },
+  {
+    label: "Student",
+    desc: "Attendance history, consent status, data deletion.",
+    mono: "ME",
+    color: "var(--ok)",
+  },
 ];
 
 const stagger = {
@@ -76,10 +111,7 @@ function LandingPage() {
         <div className="absolute inset-0 -z-30">
           <Lightfall
             dpr={1}
-            colors={isDark
-              ? ["#F59E0B", "#D97706", "#10B981"]
-              : ["#B45309", "#92400E", "#059669"]
-            }
+            colors={isDark ? ["#F59E0B", "#D97706", "#10B981"] : ["#B45309", "#92400E", "#059669"]}
             backgroundColor={isDark ? "#07070A" : "#F8F6F1"}
             speed={0.4}
             streakCount={isDark ? 3 : 2}
@@ -127,7 +159,8 @@ function LandingPage() {
           <div
             className="pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2"
             style={{
-              width: "600px", height: "600px",
+              width: "600px",
+              height: "600px",
               background: "radial-gradient(circle, var(--primary-glow) 0%, transparent 70%)",
               filter: "blur(80px)",
             }}
@@ -162,8 +195,8 @@ function LandingPage() {
             transition={{ duration: 0.5, delay: 1 }}
             className="mt-6 max-w-lg text-[15px] leading-relaxed text-[color:var(--muted)]"
           >
-            Browser-based face recognition for attendance and exam proctoring —
-            built with visibility-normalised engagement and privacy invariants baked in.
+            Browser-based face recognition for attendance and exam proctoring — built with
+            visibility-normalised engagement and privacy invariants baked in.
           </motion.p>
 
           <motion.div
@@ -211,16 +244,28 @@ function LandingPage() {
               <motion.div key={p.title} variants={fadeUp}>
                 <SpotlightCard
                   className="glass-frosted glass-hover rounded-2xl p-6 h-full"
-                  spotlightColor={i === 0 ? "var(--primary-glow)" : i === 1 ? "var(--accent-glow)" : "rgba(244,63,94,0.1)"}
+                  spotlightColor={
+                    i === 0
+                      ? "var(--primary-glow)"
+                      : i === 1
+                        ? "var(--accent-glow)"
+                        : "rgba(244,63,94,0.1)"
+                  }
                 >
                   {/* Stat callout */}
                   <div className="mb-4 flex items-baseline gap-2">
-                    <span className="font-display text-3xl font-extrabold text-[color:var(--ink)]">{p.stat}</span>
-                    <span className="font-mono-nums text-[10px] uppercase tracking-[0.14em] text-[color:var(--muted)]">{p.statLabel}</span>
+                    <span className="font-display text-3xl font-extrabold text-[color:var(--ink)]">
+                      {p.stat}
+                    </span>
+                    <span className="font-mono-nums text-[10px] uppercase tracking-[0.14em] text-[color:var(--muted)]">
+                      {p.statLabel}
+                    </span>
                   </div>
                   <div className="h-px bg-gradient-to-r from-transparent via-[color:var(--line-strong)] to-transparent mb-4" />
                   <p.icon className="h-5 w-5 text-[color:var(--primary)]" strokeWidth={1.8} />
-                  <h3 className="mt-3 font-display text-base font-extrabold tracking-tight">{p.title}</h3>
+                  <h3 className="mt-3 font-display text-base font-extrabold tracking-tight">
+                    {p.title}
+                  </h3>
                   <p className="mt-2 text-sm leading-relaxed text-[color:var(--muted)]">{p.desc}</p>
                 </SpotlightCard>
               </motion.div>
@@ -259,7 +304,10 @@ function LandingPage() {
                   variants={fadeUp}
                   className="flex items-start gap-2.5 rounded-lg border border-[color:var(--line)] bg-[color:var(--surface)]/50 px-3 py-2.5"
                 >
-                  <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[color:var(--ok)]" strokeWidth={2} />
+                  <ShieldCheck
+                    className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[color:var(--ok)]"
+                    strokeWidth={2}
+                  />
                   <span className="text-[13px] leading-snug">{inv}</span>
                 </motion.div>
               ))}
@@ -296,12 +344,17 @@ function LandingPage() {
                     style={{ background: `color-mix(in oklab, ${r.color} 12%, transparent)` }}
                   >
                     <div className="h-1.5 w-1.5 rounded-full" style={{ background: r.color }} />
-                    <span className="font-mono-nums text-[9px] uppercase tracking-[0.18em]" style={{ color: r.color }}>
+                    <span
+                      className="font-mono-nums text-[9px] uppercase tracking-[0.18em]"
+                      style={{ color: r.color }}
+                    >
                       {r.mono}
                     </span>
                   </div>
                   <h3 className="mt-3 font-display text-base font-extrabold">{r.label}</h3>
-                  <p className="mt-1.5 text-xs leading-relaxed text-[color:var(--muted)]">{r.desc}</p>
+                  <p className="mt-1.5 text-xs leading-relaxed text-[color:var(--muted)]">
+                    {r.desc}
+                  </p>
                 </SpotlightCard>
               </motion.div>
             ))}
