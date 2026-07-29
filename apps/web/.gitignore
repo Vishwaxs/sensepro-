@@ -14,8 +14,12 @@ dist-ssr
 .vinxi
 .tanstack/**
 .nitro
+
+# Local env files — never commit secrets
+.env
+.env.local
+.env.*.local
 *.local
-<<<<<<< HEAD
 
 # Wrangler / Cloudflare
 .wrangler/
@@ -31,8 +35,3 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-=======
-.env
-.env.local
-.env.*.local
->>>>>>> origin/feat/phase-1-foundations
