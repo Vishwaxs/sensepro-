@@ -117,15 +117,32 @@ function EnrollmentPage() {
     setLoading(true);
     setLoadError(null);
     try {
-      const [studRes, embRes] = await Promise.all([
-        supabase.from("students").select("id, reg_no, full_name, class_section").order("reg_no"),
-        supabase.from("embeddings").select("student_id, source"),
-      ]);
+      // Page through embeddings in 1000-row chunks. PostgREST returns at most
+      // the server-side row limit (default 1000) per request, so a single
+      // .select() silently undercounts once a class exceeds that threshold.
+      const PAGE_SIZE = 1000;
+      const allEmb: { student_id: string; source: string | null }[] = [];
+      let offset = 0;
+      while (true) {
+        const { data: page, error: pageErr } = await supabase
+          .from("embeddings")
+          .select("student_id, source")
+          .range(offset, offset + PAGE_SIZE - 1);
+        if (pageErr) throw pageErr;
+        const rows = (page ?? []) as { student_id: string; source: string | null }[];
+        allEmb.push(...rows);
+        if (rows.length < PAGE_SIZE) break;
+        offset += PAGE_SIZE;
+      }
+
+      const studRes = await supabase
+        .from("students")
+        .select("id, reg_no, full_name, class_section")
+        .order("reg_no");
       if (studRes.error) throw studRes.error;
-      if (embRes.error) throw embRes.error;
 
       const agg: Record<string, EmbStat> = {};
-      for (const row of (embRes.data as { student_id: string; source: string | null }[]) ?? []) {
+      for (const row of allEmb) {
         const st = (agg[row.student_id] ??= { ...EMPTY_STAT });
         st.total += 1;
         if (row.source === "photo") st.photo += 1;
