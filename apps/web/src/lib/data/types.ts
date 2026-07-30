@@ -15,6 +15,7 @@ export interface RosterEntry {
   reg_no: string;
   state: AttendanceState;
   last_seen: string | null; // ISO
+  via?: "camera" | "qr" | null; // how the latest PRESENT was marked
 }
 
 export interface Session {

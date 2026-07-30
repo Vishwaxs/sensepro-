@@ -173,11 +173,13 @@ class SupabaseWriter:
 
     def count_rows(self, table: str, params: dict | None = None) -> int | None:
         """Exact row count via PostgREST's Content-Range header. Diagnostic use
-        (the /healthz preflight) — every table we count has an id column."""
-        r = self._client.get(
+        (the /healthz preflight). Uses a HEAD request with count=exact so no
+        column name assumption is needed (qr_tokens has PK=token, not id)."""
+        r = self._client.request(
+            "HEAD",
             f"/{table}",
-            params={"select": "id", **(params or {})},
-            headers={"Prefer": "count=exact", "Range-Unit": "items", "Range": "0-0"},
+            params={**(params or {})},
+            headers={"Prefer": "count=exact"},
         )
         r.raise_for_status()
         total = r.headers.get("content-range", "").split("/")[-1]
@@ -488,7 +490,7 @@ def build_writer() -> PresenceWriter:
 
     if settings.supabase_enabled:
         try:
-            writer = SupabaseWriter(url=settings.supabase_url, key=settings.supabase_secret_key)
+            writer = SupabaseWriter(url=settings.supabase_url, key=settings.supabase_postgrest_key)
             # Quick connectivity check — hit a lightweight endpoint
             writer._client.get("/", params={"limit": "0"})
             return writer
@@ -517,7 +519,7 @@ def require_supabase_writer() -> SupabaseWriter:
         raise SupabaseNotConfigured(
             "This endpoint needs SUPABASE_URL + SUPABASE_SECRET_KEY (service role)."
         )
-    return SupabaseWriter(url=settings.supabase_url, key=settings.supabase_secret_key)
+    return SupabaseWriter(url=settings.supabase_url, key=settings.supabase_postgrest_key)
 
 
 @dataclass

@@ -22,6 +22,12 @@ import { API_BASE } from "@/lib/api";
 const RTSP_SOURCE = "__rtsp__";
 const RTSP_LABEL = "CP Plus RTSP · 10.101.40.189";
 
+// The class this capture station records for. class_section MUST match the
+// students' class_section in Supabase — the QR claim rejects any student whose
+// class differs (403). Override per deployment via env.
+const CLASS_SECTION = import.meta.env.VITE_CLASS_SECTION || "MCA-4B";
+const CLASS_SUBJECT = import.meta.env.VITE_CLASS_SUBJECT || "Distributed Systems";
+
 export const Route = createFileRoute("/capture")({
   beforeLoad: guardRoute(["teacher", "admin"]),
   head: () => ({
@@ -411,8 +417,8 @@ function CapturePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          class_section: "MCA-II",
-          subject: "Distributed Systems",
+          class_section: CLASS_SECTION,
+          subject: CLASS_SUBJECT,
           mode: "lecture",
         }),
       });

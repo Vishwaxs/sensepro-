@@ -1,16 +1,57 @@
+# Python
 __pycache__/
 *.pyc
+*.pyo
 .venv/
 venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Secrets — never commit
 .env
 .env.local
+.env.*.local
+
+# Databases
 *.sqlite3
 *.db
 models/*.onnx
+
+# Node
 node_modules/
 .next/
 dist/
+.tanstack/**
+*.log
+
+# OS
 .DS_Store
-.pytest_cache/
-.ruff_cache/
-*.egg-info/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Privacy — biometric source media (consent invariant)
+"Edited Images"/
+Edited Images/
+
+# Deny-list: misc root files that must never be committed
+4MCAB.pdf
+*.err
+pdf_content.txt
+extract_pdf_data.py
+COPILOT_HANDOFF.md
+SensePro_*.md
+# Scripts that contain hardcoded student PII (email/name) — never commit
+apps/web/scripts/create_student_user.mjs
+supabase/scripts/create_student_user.mjs
+
+# Raw enrollment media — never copy into repo
+*.mp4
+*.mov
+*.avi
+*.webm
+enrollment_photos/
+enrollment_videos/

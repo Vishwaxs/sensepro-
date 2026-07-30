@@ -1,0 +1,64 @@
+%% SensePro+ Enrollment Pipeline
+%% Video/photos → quality gate → degrade-augment → embeddings → purge raw.
+
+graph LR
+  subgraph Input["Source (admin-supervised)"]
+    VIDEO["Video upload<br/>~25s, 1080p"]
+    PHOTOS["DSLR photos<br/>2-3 per student"]
+  end
+
+  subgraph Extract["Frame Extraction"]
+    FRAMES["Extract at 5 fps<br/>(video) or read all<br/>(photos)"]
+  end
+
+  subgraph Gate["Quality Gate"]
+    DETECT["SCRFD detect<br/>exactly 1 face"]
+    SIZE["Face ≥ 60px height"]
+    BLUR["Blur variance ≥ 40"]
+    BRIGHT["Brightness 40–220"]
+    POSE["Pose bin: L/C/R<br/>top 3 per bin"]
+  end
+
+  subgraph Degrade["Degrade-Augmentation"]
+    D1["Downscale to 96px"]
+    D2["Downscale to 64px"]
+    JPEG["JPEG Q40 compress"]
+    GBLUR["Gaussian blur σ=0.6"]
+    UP["Upscale back"]
+  end
+
+  subgraph Embed["Embedding"]
+    ARCFACE["ArcFace 512-d<br/>L2-normalised"]
+    GALLERY["Store in gallery<br/>(pgvector or JSON)"]
+  end
+
+  subgraph Purge["Data Minimisation"]
+    DELETE["Delete raw video/frames<br/>immediately"]
+    NOTE["Only 512-d vectors persist<br/>No image ever stored"]
+  end
+
+  VIDEO --> FRAMES
+  PHOTOS --> FRAMES
+  FRAMES --> DETECT
+  DETECT --> SIZE
+  SIZE --> BLUR
+  BLUR --> BRIGHT
+  BRIGHT --> POSE
+
+  POSE -->|clean crop| ARCFACE
+  POSE -->|crop| D1
+  POSE -->|crop| D2
+  D1 --> JPEG
+  D2 --> JPEG
+  JPEG --> GBLUR
+  GBLUR --> UP
+  UP --> ARCFACE
+
+  ARCFACE --> GALLERY
+  FRAMES -.->|after processing| DELETE
+
+  style Input fill:#1a1a2e,stroke:#F59E0B,color:#fff
+  style Gate fill:#16213e,stroke:#10B981,color:#fff
+  style Degrade fill:#0f3460,stroke:#6366F1,color:#fff
+  style Embed fill:#16213e,stroke:#10B981,color:#fff
+  style Purge fill:#2d1b1b,stroke:#EF4444,color:#fff

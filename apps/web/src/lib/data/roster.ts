@@ -24,6 +24,7 @@ export interface IntervalRow {
   state: PresenceState;
   started_at: string;
   ended_at: string | null;
+  via: "camera" | "qr" | null; // camera = passive recognition, qr = absentee selfie
 }
 
 /** Latest open session, or null when nothing is live. */
@@ -50,7 +51,7 @@ export async function fetchStudents(): Promise<StudentRow[]> {
 export async function fetchIntervals(sessionId: string): Promise<IntervalRow[]> {
   const { data, error } = await supabase
     .from("presence_intervals")
-    .select("id, session_id, student_id, state, started_at, ended_at")
+    .select("id, session_id, student_id, state, started_at, ended_at, via")
     .eq("session_id", sessionId)
     .order("started_at");
   if (error) throw error;
@@ -83,6 +84,7 @@ export function deriveRoster(students: StudentRow[], intervals: IntervalRow[]): 
       state: latest?.state ?? "ABSENT",
       last_seen_ts: latest ? Math.max(0, (now - Date.parse(latest.started_at)) / 1000) : null,
       present_seconds,
+      via: latest?.via ?? null,
     };
   });
 }

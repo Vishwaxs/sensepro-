@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Download, Filter, Phone, Users2, Eye, WifiOff } from "lucide-react";
+import { Download, Filter, Phone, Users2, Eye, WifiOff, QrCode } from "lucide-react";
 import { KpiCard } from "@/components/sp/KpiCard";
 import { StateChip } from "@/components/sp/StateChip";
 import {
@@ -260,7 +260,17 @@ function TeacherPage() {
                         {r.full_name}
                       </td>
                       <td className="px-4 py-3">
-                        <StateChip state={r.state} />
+                        <div className="flex items-center gap-2">
+                          <StateChip state={r.state} />
+                          {r.state === "PRESENT" && r.via === "qr" && (
+                            <span
+                              title="Verified via absentee QR selfie"
+                              className="inline-flex items-center gap-1 rounded-full border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/10 px-2 py-0.5 font-mono-nums text-[10px] uppercase tracking-wider text-[color:var(--accent)]"
+                            >
+                              <QrCode className="h-3 w-3" /> QR
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td
                         className="px-4 py-3 font-mono-nums text-xs text-[color:var(--muted)]"

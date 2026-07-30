@@ -1,0 +1,48 @@
+%% SensePro+ Security Architecture
+%% Auth boundary (Supabase) with face as convenience layer.
+
+graph TB
+  subgraph Auth["Authentication (Supabase GoTrue)"]
+    LOGIN["Email/Password Login<br/>→ JWT with app_role claim"]
+    ROLES["Roles: teacher | management | admin | student"]
+  end
+
+  subgraph Convenience["Face Recognition (Convenience Layer)"]
+    FACE["ArcFace matching<br/>→ attendance record"]
+    NOTE1["⚠ Face is NEVER the auth gate<br/>Login is always email/password"]
+  end
+
+  subgraph RLS_LAYER["Row-Level Security (Postgres)"]
+    RLS1["students: self-read via auth_uid"]
+    RLS2["presence: self-read + staff-read"]
+    RLS3["embeddings: admin-only read"]
+    RLS4["engagement: staff-read (no student_id column)"]
+    RLS5["proctor: teacher+admin read/review"]
+    RLS6["audit: admin read-only"]
+  end
+
+  subgraph Write["Write Path (Service Role Only)"]
+    SR["Service Role Key<br/>bypasses RLS"]
+    VIS["Vision pipeline writes:<br/>presence_intervals,<br/>proctor_flags,<br/>engagement_zone_aggregates"]
+    AUDIT["Audit trigger:<br/>hash-chain append-only"]
+  end
+
+  subgraph Phase5["Phase 5 (Future)"]
+    QR["QR → Face-Verify<br/>two-factor attendance"]
+    LIVENESS["Liveness Detection<br/>anti-spoofing"]
+    SELF_ENROLL["Self-Enrollment Kiosk<br/>supervised"]
+  end
+
+  LOGIN --> RLS_LAYER
+  FACE -.->|attendance only| VIS
+  SR --> VIS
+  VIS --> AUDIT
+
+  LOGIN -.- NOTE1
+  FACE -.- NOTE1
+
+  style Auth fill:#16213e,stroke:#10B981,color:#fff
+  style Convenience fill:#1a1a2e,stroke:#F59E0B,color:#fff
+  style RLS_LAYER fill:#0f3460,stroke:#6366F1,color:#fff
+  style Write fill:#16213e,stroke:#10B981,color:#fff
+  style Phase5 fill:#1a1a2e,stroke:#888,color:#aaa,stroke-dasharray:5 5

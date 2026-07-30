@@ -15,9 +15,12 @@ class Settings(BaseSettings):
     # directly via RLS/Realtime. Leave supabase_url blank to run fully offline
     # (build_writer falls back to a no-op writer; tests never touch the network).
     supabase_url: str = ""
-    # The sb_secret_ server key: authenticates as the service_role Postgres
-    # role, bypasses RLS. One credential, one env var.
+    # The sb_secret_ server key: authenticates against the Auth Admin API.
+    # One credential, one env var.
     supabase_secret_key: str = ""
+    # The classic service_role JWT: used for PostgREST REST calls (apikey + Bearer).
+    # If set, this is preferred over supabase_secret_key for PostgREST.
+    supabase_service_role_key: str = ""
 
     # RTSP capture source (Phase 3, backend/capture). The URL carries the
     # camera credentials — set it only via env; logs always mask the password.
@@ -44,7 +47,19 @@ class Settings(BaseSettings):
 
     @property
     def supabase_enabled(self) -> bool:
-        return bool(self.supabase_url and self.supabase_secret_key)
+        return bool(
+            self.supabase_url and (self.supabase_secret_key or self.supabase_service_role_key)
+        )
+
+    @property
+    def supabase_postgrest_key(self) -> str:
+        """Key used for PostgREST REST calls — prefers the JWT service_role key."""
+        return self.supabase_service_role_key or self.supabase_secret_key
+
+    @property
+    def supabase_auth_key(self) -> str:
+        """Key used for Supabase Auth Admin API calls (sb_secret_ format)."""
+        return self.supabase_secret_key or self.supabase_service_role_key
 
     class Config:
         env_file = ".env"

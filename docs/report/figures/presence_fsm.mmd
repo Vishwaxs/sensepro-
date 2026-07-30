@@ -1,0 +1,37 @@
+%% SensePro+ Presence FSM States
+%% Per-student state within a single class_session.
+
+stateDiagram-v2
+  [*] --> ABSENT: Session starts
+
+  ABSENT --> PRESENT: Face matched\n(cosine ≥ 0.45)
+  
+  PRESENT --> UNVERIFIED: Track lost for\nmiss_threshold cycles
+  
+  UNVERIFIED --> PRESENT: Face re-matched\nwithin session
+  
+  UNVERIFIED --> ABSENT: Session ends\n(never re-confirmed)
+  
+  PRESENT --> PRESENT: Continuous\nre-identification
+  
+  PRESENT --> [*]: Session ends\n(final state: PRESENT)
+  UNVERIFIED --> [*]: Session ends\n(final state: UNVERIFIED)
+  ABSENT --> [*]: Session ends\n(final state: ABSENT)
+
+  note right of PRESENT
+    Written to presence_intervals
+    as an OPEN interval (no ended_at).
+    Closed when state changes.
+  end note
+
+  note right of UNVERIFIED
+    A conservative transition.
+    Brief occlusions trigger this,
+    but re-matching restores PRESENT.
+  end note
+
+  note left of ABSENT
+    Default state.
+    No presence_interval row exists
+    until the first match.
+  end note

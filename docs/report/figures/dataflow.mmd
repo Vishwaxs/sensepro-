@@ -1,0 +1,34 @@
+%% SensePro+ Data Flow — One Frame's Journey
+%% From capture to dashboard, showing what is kept and what is discarded.
+
+sequenceDiagram
+  participant Cam as Camera/Browser
+  participant WS as WebSocket/RTSP
+  participant Det as SCRFD Detector
+  participant Trk as ByteTrack
+  participant ReID as ArcFace Re-ID
+  participant FSM as Presence FSM
+  participant DB as Supabase (service role)
+  participant Dash as Dashboard (RLS)
+
+  Cam->>WS: frame (JPEG/raw)
+  Note over WS: Frame held in memory only
+  WS->>Det: numpy array
+  Det->>Det: detect faces → bounding boxes
+  Det->>Trk: detections + scores
+  Trk->>Trk: IoU matching → track IDs
+  
+  alt Re-ID interval elapsed (30s)
+    Trk->>ReID: face crop + track ID
+    ReID->>ReID: ArcFace embed → 512-d vector
+    ReID->>ReID: cosine search vs gallery
+    ReID->>FSM: matched student_id (or unknown)
+  end
+
+  FSM->>FSM: state transition (ABSENT→PRESENT / etc.)
+  FSM->>DB: INSERT/UPDATE presence_intervals
+  Note over DB: Only structured data persisted
+  
+  DB->>Dash: Realtime push (RLS-scoped)
+  
+  Note over Cam,WS: ⚠ Frame is discarded after processing<br/>No image ever written to disk or database
