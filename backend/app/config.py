@@ -3,13 +3,32 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     vision_backend: str = "stub"
-    reid_interval_s: float = 30.0
+    # How often each track is re-identified (ArcFace match). Detection/boxes run
+    # every frame regardless; this is the identity refresh. Low = near-continuous
+    # recognition (new faces get named within a couple of seconds). Now that
+    # inference runs off the event loop this is cheap to keep responsive.
+    reid_interval_s: float = 2.0
     miss_threshold: int = 3
     cosine_threshold: float = 0.45
     enrollment_json: str = "enrollments.json"  # dev: load roster from file
     # Known frontend origins only — never default to "*" on a service that
     # holds the server key and mints sessions.
     allow_origins: str = "http://localhost:5173"
+
+    # Detection resolution. det_size is the SCRFD internal resize — the real
+    # gate for small-face detection. A bigger send width with det_size 640
+    # changes nothing; both must be raised together. capture_send_width and
+    # capture_fps are the recommended defaults the frontend reads at startup.
+    det_size: int = 640
+    capture_send_width: int = 1280
+    capture_fps: float = 1.0
+    # Minimum face pixel height to consider for matching. 0 = no filter
+    # (all detected faces are matched). Raise to skip micro-detections.
+    min_face_px: int = 0
+
+    # Cumulative attendance: a student is ATTENDED for the session once they
+    # have >= this many confident sightings. ATTENDED never flips back.
+    attendance_sighting_threshold: int = 3
 
     # Supabase write-path (Phase 2). Server-side only; the frontend reads Postgres
     # directly via RLS/Realtime. Leave supabase_url blank to run fully offline

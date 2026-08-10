@@ -10,6 +10,7 @@ import os
 
 import numpy as np
 
+from presence.attendance import CumulativeAttendance
 from presence.fsm import PresenceFSM
 from vision.embedding_store import EmbeddingStore
 from vision.tracker import IoUTracker
@@ -17,12 +18,20 @@ from vision.types import Track
 
 
 def build_backend():
-    """Factory selected by VISION_BACKEND (stub | insightface)."""
+    """Factory selected by the VISION_BACKEND env var (stub | insightface).
+
+    NOTE: reads the OS env var, not .env — so the enrolment CLI and uvicorn must
+    have VISION_BACKEND set in their process environment (a .env value alone is
+    not picked up here). Unset -> stub (the deterministic dev/CI default)."""
     backend = os.getenv("VISION_BACKEND", "stub").lower()
     if backend == "insightface":
+        from app.config import settings
         from vision.insightface_backend import InsightFaceBackend
 
-        b = InsightFaceBackend()
+        b = InsightFaceBackend(
+            det_size=settings.det_size,
+            min_face_px=settings.min_face_px,
+        )
         return b, b  # detector, embedder are the same object
     from vision.stub import StubDetector, StubEmbedder
 
@@ -35,11 +44,13 @@ class SessionPipeline:
         store: EmbeddingStore,
         reid_interval_s: float = 30.0,
         miss_threshold: int = 3,
+        attendance_threshold: int = 3,
     ) -> None:
         self.detector, self.embedder = build_backend()
         self.tracker = IoUTracker()
         self.store = store
         self.fsm = PresenceFSM(miss_threshold=miss_threshold)
+        self.attendance = CumulativeAttendance(threshold=attendance_threshold)
         self.reid_interval_s = reid_interval_s
         self._last_reid_pass = -1e9
         self.last_tracks: list[Track] = []
@@ -59,6 +70,8 @@ class SessionPipeline:
                     vec = self.embedder.embed(frame_bgr, tr.det)
                     sid, score = self.store.match(vec)
                     tr.student_id, tr.match_score, tr.last_reid_ts = sid, score, ts
+                    if sid is not None:
+                        self.attendance.observe(sid, score, ts)
             seen = {t.student_id for t in tracks if t.student_id}
             transitions = self.fsm.observe(seen, self.store.roster, ts)
             self._last_reid_pass = ts
@@ -69,6 +82,7 @@ class SessionPipeline:
             "faces": [self._face_json(t) for t in tracks],
             "transitions": [{"student_id": s, "state": st} for s, st in transitions],
             "present": sorted(s for s in self.store.roster if self.fsm.state_of(s) == "PRESENT"),
+            "attended": sorted(self.attendance.attended_ids()),
         }
 
     @staticmethod

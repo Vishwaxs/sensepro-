@@ -17,19 +17,26 @@ EMB_DIM = 512
 
 
 class InsightFaceBackend:
-    def __init__(self, det_size: int = 640) -> None:
+    def __init__(self, det_size: int = 640, min_face_px: int = 0) -> None:
         from insightface.app import FaceAnalysis  # lazy
 
         self.app = FaceAnalysis(name="buffalo_l")
         self.app.prepare(ctx_id=0, det_size=(det_size, det_size))
+        self._min_face_px = min_face_px
         self._faces_cache: list = []
 
-    def detect(self, frame_bgr: np.ndarray) -> list[Detection]:
-        faces = self.app.get(frame_bgr)
+    def detect(self, frame_bgr: np.ndarray, max_num: int = 0) -> list[Detection]:
+        # max_num=0 -> all faces (live capture); max_num=1 -> the single main
+        # subject (enrolment). SCRFD over-fires on very high-res single portraits;
+        # app.get's max_num post-processing returns just the primary face.
+        faces = self.app.get(frame_bgr, max_num=max_num)
         self._faces_cache = faces
         dets: list[Detection] = []
         for f in faces:
             x1, y1, x2, y2 = f.bbox
+            face_h = abs(y2 - y1)
+            if self._min_face_px > 0 and face_h < self._min_face_px:
+                continue
             lmk = [(float(p[0]), float(p[1])) for p in getattr(f, "kps", [])]
             dets.append(
                 Detection(
