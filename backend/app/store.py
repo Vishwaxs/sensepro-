@@ -421,6 +421,31 @@ class SupabaseWriter:
         rows = r.json()
         return rows[0] if rows else None
 
+    def role_for_auth_uid(self, auth_uid: str) -> str | None:
+        """The user's app_role from user_roles — the source of truth, read with
+        the service key (which bypasses RLS). Lets staff endpoints authorise a
+        caller even when the Access Token Hook isn't injecting app_role into the
+        JWT (hook disabled, or the token predates the user's role)."""
+        r = self._client.get(
+            "/user_roles",
+            params={"user_id": f"eq.{auth_uid}", "select": "app_role", "limit": "1"},
+        )
+        r.raise_for_status()
+        rows = r.json()
+        return rows[0]["app_role"] if rows else None
+
+    def list_students(self, class_section: str | None = None) -> list[dict]:
+        """All students (optionally one class), read with the service key so the
+        capture UI can resolve recognised ids -> names + reg_nos WITHOUT the
+        browser's RLS app_role (the kiosk session may not carry it). `id` is the
+        students.id the embeddings and live recognition key on."""
+        params = {"select": "id,reg_no,full_name", "order": "reg_no"}
+        if class_section:
+            params["class_section"] = f"eq.{class_section}"
+        r = self._client.get("/students", params=params)
+        r.raise_for_status()
+        return r.json()
+
     def active_session(self, session_id: str) -> dict | None:
         r = self._client.get(
             "/class_sessions",

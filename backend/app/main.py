@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.enroll_api import router as enroll_router
 from app.qr_api import router as qr_router
+from app.roster_api import router as roster_router
 from app.rtsp_api import router as rtsp_router
 from app.sessions import router as sessions_router
 from app.ws import router as ws_router
@@ -29,6 +30,7 @@ app.include_router(sessions_router)
 app.include_router(rtsp_router)
 app.include_router(enroll_router)
 app.include_router(qr_router)
+app.include_router(roster_router)
 
 
 @app.get("/health")

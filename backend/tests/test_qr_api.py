@@ -35,17 +35,23 @@ def _hdr(role: str) -> dict:
 
 
 class FakeQRWriter:
-    def __init__(self, *, session=None, student=None, token=None, claim="win", present=False):
+    def __init__(
+        self, *, session=None, student=None, token=None, claim="win", present=False, db_role=None
+    ):
         self.session = session
         self.student = student
         self.token = token
         self.claim = claim
         self.present = present
+        self.db_role = db_role
         self.audits: list = []
         self.closed_qr = False
 
     def active_session(self, session_id):
         return self.session
+
+    def role_for_auth_uid(self, auth_uid):
+        return self.db_role
 
     def issue_qr_token(self, session_id, ttl_s):
         return {"token": "tok-xyz", "expires_at": "2026-07-29T00:01:15Z"}
@@ -114,6 +120,34 @@ def test_close_window(monkeypatch):
     _patch_writer(monkeypatch, writer)
     r = client.post("/v1/qr/close", json={"session_id": "sess-1"}, headers=_hdr("admin"))
     assert r.status_code == 200 and writer.closed_qr is True
+
+
+def test_issue_token_role_from_db_when_jwt_has_no_app_role(monkeypatch):
+    """Access Token Hook disabled → JWT carries no app_role → the role is resolved
+    from user_roles after a real token verify. The staff endpoint still works."""
+    writer = FakeQRWriter(session=SESSION, db_role="admin")
+    _patch_writer(monkeypatch, writer)
+    _patch_user(monkeypatch)  # _verify_user validates the token -> uid, no network
+    r = client.post(
+        "/v1/qr/token",
+        json={"session_id": "sess-1"},
+        headers={"Authorization": f"Bearer {_jwt(None)}"},  # empty claims, no app_role
+    )
+    assert r.status_code == 200
+    assert r.json()["token"] == "tok-xyz"
+
+
+def test_issue_token_no_role_in_jwt_or_db_forbidden(monkeypatch):
+    """No app_role in the JWT and no user_roles row → 403 (never a silent allow)."""
+    writer = FakeQRWriter(session=SESSION, db_role=None)
+    _patch_writer(monkeypatch, writer)
+    _patch_user(monkeypatch)
+    r = client.post(
+        "/v1/qr/token",
+        json={"session_id": "sess-1"},
+        headers={"Authorization": f"Bearer {_jwt(None)}"},
+    )
+    assert r.status_code == 403
 
 
 # --- student: claim -----------------------------------------------------------

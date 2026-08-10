@@ -12,6 +12,7 @@ import numpy as np
 from fastapi.testclient import TestClient
 
 from app.main import app
+from vision.embedding_store import EmbeddingStore
 
 
 def _marker_frame(bgr=(0, 0, 255)) -> str:
@@ -32,6 +33,9 @@ def _blank_frame() -> str:
 def test_capture_loop_detects_and_marks_present(monkeypatch) -> None:
     # reid every frame; small miss threshold so we can drive ABSENT quickly
     monkeypatch.setenv("REID_INTERVAL_S", "0")
+    # Hermetic: no live gallery (this test only checks the frame->result plumbing,
+    # not identity). Without this it would read whatever is in a configured Supabase.
+    monkeypatch.setattr("app.ws._load_store", lambda: EmbeddingStore())
     client = TestClient(app)
     face = _marker_frame()
     with client.websocket_connect("/ws/capture") as ws:

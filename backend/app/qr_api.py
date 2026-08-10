@@ -61,9 +61,30 @@ def _decode_claims(authorization: str | None) -> dict:
 
 
 def _require_role(authorization: str | None, allowed: set[str]) -> dict:
+    """Authorise a staff caller.
+
+    Fast path: trust the app_role the Access Token Hook injected into the JWT.
+    Fallback: if the JWT carries NO app_role (the hook is disabled, or the token
+    was minted before the user's role existed), verify the token for real via
+    GoTrue and read the role straight from user_roles — the DB source of truth.
+    This keeps staff endpoints working regardless of whether the hook is enabled,
+    without ever trusting a client-supplied role (a present-but-wrong role in the
+    JWT is still rejected, and the fallback is gated on a real token verify)."""
     claims = _decode_claims(authorization)
-    if claims.get("app_role") not in allowed:
+    role = claims.get("app_role")
+    if role is not None:
+        if role not in allowed:
+            raise HTTPException(403, f"Requires one of {sorted(allowed)}")
+        return claims
+    uid = _verify_user(authorization)
+    writer = _writer()
+    try:
+        db_role = writer.role_for_auth_uid(uid)
+    finally:
+        writer.close()
+    if db_role not in allowed:
         raise HTTPException(403, f"Requires one of {sorted(allowed)}")
+    claims["app_role"] = db_role
     return claims
 
 

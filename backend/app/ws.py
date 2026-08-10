@@ -26,6 +26,11 @@ from fastapi.concurrency import run_in_threadpool
 
 from app.config import settings
 from app.store import SessionRecorder, build_writer
+from engagement.signals import SignalExtractor
+from engagement.vnei import ZONES, ZoneAggregator
+from proctor.detector import ObjectDetection, build_proctor_detector
+from proctor.engine import ProctorEngine
+from proctor.suppression import GazeSuppressor
 from vision.embedding_store import EmbeddingStore
 from vision.pipeline import SessionPipeline
 
@@ -135,6 +140,7 @@ async def capture(ws: WebSocket) -> None:
         store=_load_store(),
         reid_interval_s=settings.reid_interval_s,
         miss_threshold=settings.miss_threshold,
+        attendance_threshold=settings.attendance_sighting_threshold,
     )
 
     # A session_id (query param or in a message) attaches presence writes to a
@@ -143,6 +149,60 @@ async def capture(ws: WebSocket) -> None:
     recorder: SessionRecorder | None = None
     qr: _QRVerifier | None = None
     session_start = datetime.now(timezone.utc)
+
+    # ---- Proctor + engagement (Phase 3) — same pattern as run_session.py ----
+    # These run on every processed frame AFTER the pipeline, reusing last_tracks.
+    # In lecture mode, proctor flags are NOT written (no exam review queue), but
+    # the object detector still runs to feed phone_nearby signals to engagement.
+    mode = ws.query_params.get("mode", "lecture")
+    proctor_engine: ProctorEngine | None = None
+    signal_extractor = SignalExtractor()
+    aggregator: ZoneAggregator | None = None
+
+    def _init_observers(session_id: str, writer) -> None:
+        nonlocal proctor_engine, aggregator
+        roster_size = len(pipe.store.roster) if pipe.store.roster else 35
+        # Even-split enrolment approximation (no seat_zone data yet)
+        q, r = divmod(roster_size, 3)
+        enrolled_by_zone = {zone: q + (1 if i < r else 0) for i, zone in enumerate(ZONES)}
+
+        if mode == "exam":
+            proctor_engine = ProctorEngine(
+                detector=build_proctor_detector(),
+                suppressor=GazeSuppressor(
+                    window_s=settings.gaze_window_s,
+                    pitch_down_deg=settings.gaze_pitch_down_deg,
+                ),
+                writer=writer,
+                session_id=session_id,
+                session_start=session_start,
+                cooldown_s=settings.proctor_cooldown_s,
+            )
+        aggregator = ZoneAggregator(
+            session_id=session_id,
+            writer=writer,
+            session_start=session_start,
+            enrolled_by_zone=enrolled_by_zone,
+            window_s=settings.engagement_window_s,
+            front_band=settings.zone_front_band,
+            back_band=settings.zone_back_band,
+        )
+
+    def _observe_frame(frame: np.ndarray, rel_ts: float) -> None:
+        """Run proctor + engagement on the latest processed frame."""
+        tracks = pipe.last_tracks
+        phone_dets: list[ObjectDetection] = []
+        if proctor_engine is not None:
+            dets = proctor_engine.detector.detect(frame)
+            proctor_engine.observe(frame, tracks, rel_ts, detections=dets)
+            phone_dets = [d for d in dets if d.label == "cell phone"]
+        signals = signal_extractor.extract(tracks, phone_dets, frame.shape[:2])
+        if aggregator is not None:
+            aggregator.observe(
+                [(t, signals[t.track_id]) for t in tracks if t.track_id in signals],
+                frame.shape[0],
+                rel_ts,
+            )
 
     def _attach(session_id: str | None) -> None:
         nonlocal recorder, qr
@@ -154,6 +214,7 @@ async def capture(ws: WebSocket) -> None:
                 session_start=session_start,
             )
             qr = _QRVerifier(writer, session_id)
+            _init_observers(session_id, writer)
 
     _attach(ws.query_params.get("session_id"))
 
@@ -169,6 +230,8 @@ async def capture(ws: WebSocket) -> None:
                     await run_in_threadpool(recorder.close, ts)
                 if qr is not None:
                     await run_in_threadpool(qr.close, datetime.now(timezone.utc))
+                if aggregator is not None:
+                    await run_in_threadpool(aggregator.flush)
                 await ws.send_json({"type": "session_ended", "ts": ts})
                 break
             if msg.get("type") != "frame":
@@ -179,14 +242,29 @@ async def capture(ws: WebSocket) -> None:
                 await ws.send_json({"type": "error", "detail": "bad frame"})
                 continue
             ts = float(msg.get("ts", 0.0))
-            result = pipe.process_frame(frame, ts)
+            # Run detect+track+re-ID in a worker thread. It is CPU-bound (SCRFD +
+            # ArcFace) and would otherwise block the event loop for hundreds of ms
+            # per real (face-bearing) frame, starving the WebSocket keepalive until
+            # the socket drops. Off the loop, the connection stays healthy under load.
+            result = await run_in_threadpool(pipe.process_frame, frame, ts)
             if recorder is not None and result["transitions"]:
                 transitions = [(t["student_id"], t["state"]) for t in result["transitions"]]
                 await run_in_threadpool(recorder.record, transitions, ts)
+            # Proctor + engagement observer (same thread-pool as the pipeline)
+            if aggregator is not None:
+                await run_in_threadpool(_observe_frame, frame, ts)
             if qr is not None:
                 recognized = {f["student_id"] for f in result["faces"] if f.get("student_id")}
                 if recognized:
                     await run_in_threadpool(qr.observe, recognized, datetime.now(timezone.utc), ts)
             await ws.send_json(result)
     except WebSocketDisconnect:
+        return
+    except RuntimeError as exc:
+        # The socket dropped mid-processing (tab throttle, proxy hiccup, reload),
+        # so a send landed after the close — starlette raises RuntimeError. That
+        # is an expected end-of-connection, not a fault: log and exit cleanly so
+        # it never surfaces as an unhandled 500-style error. The client's
+        # auto-reconnect re-establishes the session.
+        logger.info("capture socket closed mid-frame: %s", exc)
         return
