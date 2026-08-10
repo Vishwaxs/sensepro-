@@ -55,3 +55,10 @@ supabase/scripts/create_student_user.mjs
 *.webm
 enrollment_photos/
 enrollment_videos/
+
+# Biometric contact sheets — student faces
+enroll_prepared_contact_sheet.jpg
+
+# Planning / chat transcripts — not project source
+prompt.md
+SensePro+*
