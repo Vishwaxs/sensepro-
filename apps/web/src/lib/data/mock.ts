@@ -57,14 +57,14 @@ export function mockRoster(): RosterEntry[] {
     const r = Math.random();
     const state: RosterEntry["state"] = r < 0.62 ? "PRESENT" : r < 0.82 ? "UNVERIFIED" : "ABSENT";
     return {
-      student_id: `s_${roll}`,
-      name,
-      reg_no: `${REG_PREFIX}${roll}`,
+      student_id: `${REG_PREFIX}${roll}`,
+      full_name: name,
       state,
       last_seen:
         state === "PRESENT"
           ? new Date(Date.now() - Math.floor(Math.random() * 180_000)).toISOString()
           : null,
+      present_seconds: state === "PRESENT" ? Math.floor(Math.random() * 3600) : 0,
     };
   });
 }

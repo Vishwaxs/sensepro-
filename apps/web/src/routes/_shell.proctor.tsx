@@ -91,6 +91,17 @@ function ProctorPage() {
 
   return (
     <div className="space-y-6">
+      {/* Sample data notice */}
+      <div className="rounded-md border border-dashed border-[color:var(--warn)]/50 bg-[color:var(--warn)]/5 px-4 py-3">
+        <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--warn)]">
+          ⚠ Sample data — not from this deployment
+        </div>
+        <p className="mt-1 text-xs text-[color:var(--muted)]">
+          The flags below are sample data. In a live exam session, real proctor flags from the
+          capture pipeline appear here for human review.
+        </p>
+      </div>
+
       <header>
         <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--muted)]">
           § human-in-the-loop

@@ -25,7 +25,9 @@ export default defineConfig({
     // local laptop dev leaves VITE_API_BASE unset and calls the backend direct.
     proxy: {
       "/api": {
-        target: process.env.VITE_PROXY_TARGET || "http://localhost:8000",
+        // 127.0.0.1, not localhost: the backend listens on IPv4 only, and Node
+        // may resolve localhost to IPv6 ::1 first -> intermittent proxy failures.
+        target: process.env.VITE_PROXY_TARGET || "http://127.0.0.1:8000",
         changeOrigin: true,
         ws: true,
         rewrite: (p) => p.replace(/^\/api/, ""),

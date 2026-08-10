@@ -123,7 +123,14 @@ export function AbsenteeQR({
           </div>
         ) : (
           <div className="rounded-lg bg-white p-3">
-            <QRCodeSVG value={claimUrl} size={200} level="M" includeMargin={false} />
+            <QRCodeSVG
+              value={claimUrl}
+              size={200}
+              level="M"
+              includeMargin={false}
+              fgColor="#000000"
+              bgColor="#ffffff"
+            />
           </div>
         )}
       </div>

@@ -81,8 +81,8 @@ export function deriveRoster(students: StudentRow[], intervals: IntervalRow[]): 
     return {
       student_id: s.reg_no,
       full_name: s.full_name,
-      state: latest?.state ?? "ABSENT",
-      last_seen_ts: latest ? Math.max(0, (now - Date.parse(latest.started_at)) / 1000) : null,
+      state: (latest?.state ?? "ABSENT") as PresenceState,
+      last_seen: latest?.started_at ?? null,
       present_seconds,
       via: latest?.via ?? null,
     };

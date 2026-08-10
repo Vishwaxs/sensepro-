@@ -80,10 +80,8 @@ async function resolveAuth(): Promise<AuthResult> {
     }
   }
 
-  // 3. Fallback: if authenticated but role is still null, default to "teacher" so user is never locked out
-  if (!role) {
-    role = "teacher";
-  }
+  // If neither source provided a role, return null — the guard will redirect
+  // to /no-role with an explanatory message. Never silently default to any role.
 
   return { role, authenticated: true };
 }
@@ -99,6 +97,12 @@ async function resolveAuth(): Promise<AuthResult> {
  */
 export function guardRoute(allowedRoles: AppRole[] | "authenticated") {
   return async () => {
+    // SSR has no localStorage, so Supabase can't see the persisted session and
+    // resolveAuth would report "not authenticated" — bouncing every refresh to
+    // /login. Skip the guard on the server and let the client (which holds the
+    // session) enforce it; client-side navigations still run the full check.
+    if (typeof window === "undefined") return {};
+
     const { role, authenticated } = await resolveAuth();
 
     if (!authenticated) {
@@ -120,6 +124,6 @@ export function guardRoute(allowedRoles: AppRole[] | "authenticated") {
 
 /** Determine the home route for a given role (used after login). */
 export function homeForRole(role: AppRole | null): string {
-  if (!role) return "/teacher";
-  return ROLE_HOME[role] ?? "/teacher";
+  if (!role) return "/no-role";
+  return ROLE_HOME[role] ?? "/no-role";
 }

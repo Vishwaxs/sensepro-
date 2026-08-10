@@ -149,7 +149,7 @@ function TeacherPage() {
         <KpiCard label="Total roster" value={total} accent="primary" hint="Enrolled" />
         <KpiCard
           label="Attendance"
-          value={Math.round((present / total) * 100)}
+          value={total > 0 ? Math.round((present / total) * 100) : 0}
           suffix="%"
           accent="accent"
           hint="Live"

@@ -3,6 +3,12 @@
 
 export type AttendanceState = "PRESENT" | "UNVERIFIED" | "ABSENT";
 
+/** Alias: roster.ts and older modules import this name. */
+export type PresenceState = AttendanceState;
+
+/** Engagement zone bands (camera-relative frame geometry). */
+export type Zone = "front" | "mid" | "back";
+
 export interface Student {
   id: string;
   name: string;
@@ -11,10 +17,10 @@ export interface Student {
 
 export interface RosterEntry {
   student_id: string;
-  name: string;
-  reg_no: string;
+  full_name: string;
   state: AttendanceState;
-  last_seen: string | null; // ISO
+  last_seen: string | null; // ISO timestamp of last state change
+  present_seconds: number; // total PRESENT duration this session
   via?: "camera" | "qr" | null; // how the latest PRESENT was marked
 }
 

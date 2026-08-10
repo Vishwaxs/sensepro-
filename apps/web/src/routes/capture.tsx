@@ -50,20 +50,44 @@ interface WsPresentRow {
   first_seen_ts: number;
 }
 interface WsTransition {
-  kind: "enter" | "leave" | "recognised";
+  // The pipeline emits the lean {student_id, state} shape; kind/name are only
+  // present if a future server enriches transitions. Both are tolerated below.
+  kind?: "enter" | "leave" | "recognised";
+  state?: "PRESENT" | "ABSENT";
   student_id?: string;
   name?: string;
   reg_no?: string;
   track_id?: number;
-  ts: number;
+  ts?: number;
 }
 interface WsResult {
   type: "result";
   ts: number;
   faces: WsFace[];
-  present: WsPresentRow[];
+  // The backend sends `present` as bare id strings; the demo seed (and any
+  // future richer server) sends full rows. handleWsMessage normalises both.
+  present: (WsPresentRow | string)[];
   transitions: WsTransition[];
-  sent_size: { w: number; h: number };
+  // Cumulative attendance: student_ids that have been seen >= threshold times
+  // this session. Once attended, never flips back.
+  attended?: string[];
+  // Optional: the current pipeline omits it — startSending tracks sent size locally.
+  sent_size?: { w: number; h: number };
+}
+
+/** Build the capture WebSocket URL — ALWAYS same-origin, through the Vite `/api`
+ *  proxy (which forwards WS upgrades to the backend). The socket therefore
+ *  matches the page's own protocol + host: an https page (tunnel) gets `wss`
+ *  (so the browser's mixed-content rule can never block it), an http page gets
+ *  `ws`, and localhost / 127.0.0.1 / a tunnel hostname all resolve to whatever
+ *  actually served the page. An absolute `ws(s)://host` in VITE_WS_URL is
+ *  deliberately ignored — that is exactly what reintroduces mixed-content and
+ *  IPv6 failures; only a relative "/path" override is honoured. */
+function resolveWsUrl(): string {
+  const raw = (import.meta.env.VITE_WS_URL as string | undefined)?.trim();
+  const path = raw && raw.startsWith("/") ? raw : "/api/ws/capture";
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${window.location.host}${path}`;
 }
 
 function CapturePage() {
@@ -91,13 +115,28 @@ function CapturePage() {
     lastSeenTs: number;
   }
   const tracksRef = useRef<Map<number, TrackVis>>(new Map());
-  const sentRef = useRef<{ w: number; h: number }>({ w: 480, h: 270 });
+  const sentRef = useRef<{ w: number; h: number }>({ w: 1280, h: 720 });
   const lastResultAtRef = useRef<number>(0);
+  // reg_no|id -> display name/reg_no, loaded once from the students table so the
+  // overlay label and PRESENT panel can show names for the bare ids the WS emits.
+  const nameMapRef = useRef<Map<string, { name: string; reg_no: string }>>(new Map());
+  // Stable first-seen wall-clock (seconds) per present id — the lean WS `present`
+  // is ids only, so we time first appearance here rather than trust the server.
+  const firstSeenRef = useRef<Map<string, number>>(new Map());
+  // Mirrors `running` for the WS onclose reconnect check. start() opens the
+  // socket from the render where running was still false, so a plain closure
+  // would capture running=false and never auto-reconnect after a drop. The ref
+  // always holds the current value.
+  const runningRef = useRef(false);
+  // Frames sent but not yet answered. Caps how far the client outruns the
+  // CPU-bound backend, so latency stays bounded (~1-2 frames) instead of the
+  // overlay lagging further behind every second as a backlog builds.
+  const inflightRef = useRef(0);
 
   const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
   const [deviceId, setDeviceId] = useState<string>("");
-  const [sendWidth, setSendWidth] = useState(480);
-  const [fps, setFps] = useState(2);
+  const [sendWidth, setSendWidth] = useState(1280);
+  const [fps, setFps] = useState(1);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [running, setRunning] = useState(false);
   const [conn, setConn] = useState<ConnState>("OFFLINE");
@@ -111,9 +150,16 @@ function CapturePage() {
   const [fullscreen, setFullscreen] = useState(false);
   const [rtspSessionId, setRtspSessionId] = useState<string | null>(null);
   const [absenteeOpen, setAbsenteeOpen] = useState(false);
+  // Cumulative attendance: set of student_ids that have crossed the sighting
+  // threshold this session. Updated from the WS `attended` field; displayed
+  // alongside live presence in the roster panel.
+  const [attended, setAttended] = useState<Set<string>>(new Set());
 
   const isRtsp = deviceId === RTSP_SOURCE;
-  const [rosterHint] = useState({ enrolled: 35 });
+  const [rosterHint, setRosterHint] = useState({ enrolled: 53 });
+  // Same-origin WS URL through the /api proxy (see resolveWsUrl). Computed once;
+  // "" during SSR (no window) — the socket only ever opens client-side.
+  const wsUrl = useMemo(() => (typeof window === "undefined" ? "" : resolveWsUrl()), []);
 
   // Demo helper: ?demo=stale seeds a frozen roster + reconnecting state so the
   // stale-roster watermark can be reviewed without a real inference server.
@@ -174,6 +220,50 @@ function CapturePage() {
       }
     })();
   }, [deviceId]);
+
+  // Load the class roster once, from the backend /v1/roster endpoint (NOT a
+  // direct browser `students` read — that is RLS-gated on app_role, which the
+  // kiosk session may not carry, and would come back empty so the overlay shows
+  // raw UUIDs). The backend reads it with the service key. This resolves the
+  // student ids the WS returns to names + reg_nos, and sets the "present / N"
+  // denominator to the real class headcount. Keyed by both id and reg_no so it
+  // works regardless of which the embeddings use. Failure falls back to the raw id.
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch(
+          `${API_BASE}/v1/roster?class_section=${encodeURIComponent(CLASS_SECTION)}`,
+        );
+        if (!res.ok) return;
+        const data = (await res.json()) as {
+          students?: { id: string; reg_no: string; full_name: string }[];
+          count?: number;
+        };
+        if (!alive || !Array.isArray(data.students)) return;
+        const m = new Map<string, { name: string; reg_no: string }>();
+        for (const s of data.students) {
+          const entry = { name: s.full_name, reg_no: s.reg_no };
+          m.set(s.reg_no, entry);
+          m.set(s.id, entry);
+        }
+        nameMapRef.current = m;
+        if (typeof data.count === "number" && data.count > 0) {
+          setRosterHint({ enrolled: data.count });
+        }
+      } catch {
+        /* roster unreachable — overlay + panel fall back to showing the raw id */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Keep runningRef current for the WS reconnect decision (see openSocket).
+  useEffect(() => {
+    runningRef.current = running;
+  }, [running]);
 
   // Timer tick
   useEffect(() => {
@@ -255,7 +345,10 @@ function CapturePage() {
         // label (fade in ~220ms after first appear / recognition change)
         const labelAlpha = Math.min(1, (now - v.labelAppearTs) / 220);
         if (labelAlpha <= 0.01) continue;
-        const label = known ? `${v.student_id} · ${v.score.toFixed(2)}` : `#${v.track_id}`;
+        const who = v.student_id
+          ? (nameMapRef.current.get(v.student_id)?.name ?? v.student_id)
+          : v.student_id;
+        const label = known ? `${who} · ${v.score.toFixed(2)}` : `#${v.track_id}`;
         const pad = 6;
         const tw = ctx.measureText(label).width + pad * 2;
         const th = 20;
@@ -291,9 +384,17 @@ function CapturePage() {
     (ev: MessageEvent) => {
       try {
         const data = JSON.parse(typeof ev.data === "string" ? ev.data : "");
+        // Each frame gets exactly one result/error back — free an in-flight slot
+        // so the sender paces to the backend instead of building a backlog.
+        if (data?.type === "result" || data?.type === "error") {
+          inflightRef.current = Math.max(0, inflightRef.current - 1);
+        }
         if (data?.type !== "result") return;
         const msg = data as WsResult;
-        sentRef.current = msg.sent_size;
+        // The pipeline omits sent_size; startSending already tracks the exact
+        // transmitted size, so only honour a server value when present — never
+        // clobber the local scale with undefined (that NaN'd the overlay draw).
+        if (msg.sent_size) sentRef.current = msg.sent_size;
         lastResultAtRef.current = performance.now();
         const now = performance.now();
         const easeOut = (t: number) => 1 - Math.pow(1 - t, 3);
@@ -337,12 +438,45 @@ function CapturePage() {
           if (!seen.has(id) && now - v.lastSeenTs > 800) tracksRef.current.delete(id);
         }
         setStale(false);
-        if (msg.present) setPresent(msg.present);
+        if (msg.present) {
+          // The lean contract sends bare id strings; the demo seed sends full
+          // rows. Normalise both to WsPresentRow, resolving names + timing first
+          // appearance locally so the panel never crashes on undefined fields.
+          const nowSec = Date.now() / 1000;
+          const rows: WsPresentRow[] = msg.present.map((p) => {
+            if (typeof p !== "string") return p;
+            const info = nameMapRef.current.get(p);
+            if (!firstSeenRef.current.has(p)) firstSeenRef.current.set(p, nowSec);
+            return {
+              student_id: p,
+              name: info?.name ?? p,
+              reg_no: info?.reg_no ?? p,
+              first_seen_ts: firstSeenRef.current.get(p) ?? nowSec,
+            };
+          });
+          const still = new Set(rows.map((r) => r.student_id));
+          for (const id of [...firstSeenRef.current.keys()])
+            if (!still.has(id)) firstSeenRef.current.delete(id);
+          setPresent(rows);
+        }
+        // Cumulative attendance: the backend sends the full attended set on
+        // every result. Merge into state (never shrinks — attended is permanent).
+        if (Array.isArray(msg.attended)) {
+          setAttended(new Set(msg.attended));
+        }
         for (const t of msg.transitions ?? []) {
-          if (t.kind === "enter" && t.name) pushToast(`${t.name} entered`, "enter");
-          else if (t.kind === "recognised" && t.name)
-            pushToast(`${t.name} recognised`, "recognised");
-          else if (t.kind === "leave" && t.name) pushToast(`${t.name} left`, "leave");
+          // Prefer a rich server shape; otherwise derive kind/name from the lean
+          // {student_id, state} the pipeline currently emits.
+          const name =
+            t.name ??
+            (t.student_id ? (nameMapRef.current.get(t.student_id)?.name ?? t.student_id) : "");
+          const kind =
+            t.kind ??
+            (t.state === "PRESENT" ? "recognised" : t.state === "ABSENT" ? "leave" : undefined);
+          if (!name || !kind) continue;
+          if (kind === "enter") pushToast(`${name} entered`, "enter");
+          else if (kind === "recognised") pushToast(`${name} recognised`, "recognised");
+          else if (kind === "leave") pushToast(`${name} left`, "leave");
         }
       } catch {
         /* malformed WS payload — ignore this frame */
@@ -352,15 +486,12 @@ function CapturePage() {
   );
 
   const openSocket = useCallback(() => {
-    const base = import.meta.env.VITE_WS_URL as string | undefined;
-    if (!base) {
-      setConn("OFFLINE");
-      return;
-    }
+    // Fresh connection: clear any in-flight accounting left over from a drop.
+    inflightRef.current = 0;
     // Attach the WS pipeline to the active session so presence (and QR-window
     // verification) persist. Survives reconnects via the ref.
     const sid = sessionIdRef.current;
-    const url = sid ? `${base}?session_id=${encodeURIComponent(sid)}` : base;
+    const url = sid ? `${wsUrl}?session_id=${encodeURIComponent(sid)}` : wsUrl;
     try {
       setConn("RECONNECTING");
       const ws = new WebSocket(url);
@@ -370,7 +501,7 @@ function CapturePage() {
       ws.onclose = () => {
         setConn("OFFLINE");
         setStale(true);
-        if (running) {
+        if (runningRef.current) {
           if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
           reconnectTimerRef.current = window.setTimeout(openSocket, 2500);
         }
@@ -381,7 +512,7 @@ function CapturePage() {
     } catch {
       setConn("OFFLINE");
     }
-  }, [handleWsMessage, running]);
+  }, [handleWsMessage, wsUrl]);
 
   const startSending = useCallback(() => {
     const canvas = document.createElement("canvas");
@@ -390,17 +521,28 @@ function CapturePage() {
     const tick = async () => {
       const video = videoRef.current;
       const ws = wsRef.current;
-      if (video && video.videoWidth > 0 && ws && ws.readyState === WebSocket.OPEN && ctx) {
+      if (
+        video &&
+        video.videoWidth > 0 &&
+        ws &&
+        ws.readyState === WebSocket.OPEN &&
+        ctx &&
+        inflightRef.current < 2
+      ) {
         const w = sendWidth;
         const h = Math.round((video.videoHeight / video.videoWidth) * w);
         if (canvas.width !== w) canvas.width = w;
         if (canvas.height !== h) canvas.height = h;
         ctx.drawImage(video, 0, 0, w, h);
+        // The backend detects on exactly this image, so its box coords are in
+        // w×h space — record it so the overlay scales boxes to the display.
+        sentRef.current = { w, h };
         const dataUrl = canvas.toDataURL("image/jpeg", 0.6);
         const b64 = dataUrl.split(",")[1] ?? "";
         const ts = (Date.now() - startEpochRef.current) / 1000;
         try {
           ws.send(JSON.stringify({ type: "frame", ts, jpg_b64: b64 }));
+          inflightRef.current += 1;
         } catch {
           /* socket mid-close — drop this frame */
         }
@@ -477,8 +619,8 @@ function CapturePage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            class_section: "MCA-II",
-            subject: "Distributed Systems",
+            class_section: CLASS_SECTION,
+            subject: CLASS_SUBJECT,
             mode: "lecture",
           }),
         });
@@ -486,9 +628,13 @@ function CapturePage() {
           const session = await res.json();
           sessionIdRef.current = session.id;
           setRtspSessionId(session.id);
+        } else {
+          // Non-fatal: recognition still runs, but presence + the QR fallback
+          // won't attach. Surface it so a misconfigured backend isn't invisible.
+          console.warn("session create failed", res.status, await res.text().catch(() => ""));
         }
-      } catch {
-        /* keep running; recognition works, persistence just won't attach */
+      } catch (e) {
+        console.warn("session attach failed — presence + QR disabled", e);
       }
       startEpochRef.current = Date.now();
       setElapsed(0);
@@ -541,7 +687,15 @@ function CapturePage() {
     tracksRef.current.clear();
   }, [rtspSessionId]);
 
-  useEffect(() => () => stop(), [stop]);
+  // Run stop() only on real unmount. `stop` depends on rtspSessionId, which
+  // start() sets the moment a session begins — if this effect depended on
+  // `stop`'s identity, that change would fire the cleanup and tear the session
+  // down the instant it started. Hold the latest stop in a ref instead.
+  const stopRef = useRef(stop);
+  useEffect(() => {
+    stopRef.current = stop;
+  }, [stop]);
+  useEffect(() => () => stopRef.current(), []);
 
   const toggleFs = useCallback(async () => {
     const el = wrapRef.current;
@@ -575,9 +729,10 @@ function CapturePage() {
 
   return (
     <div ref={wrapRef} className="app-bg relative flex h-screen w-screen flex-col overflow-hidden">
-      {/* Absentee QR fallback — teacher opens a verification window for the session */}
+      {/* Absentee QR fallback — teacher opens a verification window for the session.
+          Sits ABOVE the footer (bottom-28) so the panel never covers End session. */}
       {running && rtspSessionId && (
-        <div className="fixed bottom-6 right-6 z-40 w-75">
+        <div className="fixed bottom-28 right-6 z-40 w-75">
           {absenteeOpen ? (
             <AbsenteeQR
               sessionId={rtspSessionId}
@@ -606,7 +761,7 @@ function CapturePage() {
           </div>
           <div>
             <div className="font-display text-xl font-extrabold tracking-tight text-[color:var(--ink)]">
-              MCA-II · Distributed Systems
+              {CLASS_SECTION} · {CLASS_SUBJECT}
             </div>
             <div className="font-mono-nums text-[11px] uppercase tracking-[0.18em] text-[color:var(--muted)]">
               Room 201 · Board Kiosk · SensePro+
@@ -748,7 +903,7 @@ function CapturePage() {
                     <div className="font-mono-nums text-[10px] tracking-wider text-[color:var(--muted)]">
                       {conn === "RECONNECTING"
                         ? "Roster shown below is the last verified state · session continues"
-                        : `${import.meta.env.VITE_WS_URL || "VITE_WS_URL unset"} · will auto-retry`}
+                        : `${wsUrl} · will auto-retry`}
                     </div>
                   </div>
                 </div>
@@ -829,16 +984,31 @@ function CapturePage() {
             </div>
           )}
           <div className="flex items-center justify-between border-b border-[color:var(--line)] px-6 py-5">
-            <div>
-              <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--muted)]">
-                Present now
-              </div>
-              <div className="mt-1 flex items-baseline gap-2">
-                <div className="font-display text-4xl font-extrabold leading-none tracking-tight text-[color:var(--ink)]">
-                  {present.length.toString().padStart(2, "0")}
+            <div className="flex gap-6">
+              <div>
+                <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--muted)]">
+                  Present now
                 </div>
-                <div className="font-mono-nums text-sm text-[color:var(--muted)]">
-                  / {rosterHint.enrolled}
+                <div className="mt-1 flex items-baseline gap-2">
+                  <div className="font-display text-4xl font-extrabold leading-none tracking-tight text-[color:var(--ink)]">
+                    {present.length.toString().padStart(2, "0")}
+                  </div>
+                  <div className="font-mono-nums text-sm text-[color:var(--muted)]">
+                    / {rosterHint.enrolled}
+                  </div>
+                </div>
+              </div>
+              <div>
+                <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--ok)]">
+                  Attended
+                </div>
+                <div className="mt-1 flex items-baseline gap-2">
+                  <div className="font-display text-4xl font-extrabold leading-none tracking-tight text-[color:var(--ok)]">
+                    {attended.size.toString().padStart(2, "0")}
+                  </div>
+                  <div className="font-mono-nums text-sm text-[color:var(--muted)]">
+                    / {rosterHint.enrolled}
+                  </div>
                 </div>
               </div>
             </div>
@@ -884,8 +1054,15 @@ function CapturePage() {
                           {p.reg_no}
                         </div>
                       </div>
-                      <div className="font-mono-nums text-[11px] text-[color:var(--ok)]">
-                        {tsAgo(p.first_seen_ts)}
+                      <div className="flex flex-col items-end gap-0.5">
+                        <div className="font-mono-nums text-[11px] text-[color:var(--ok)]">
+                          {tsAgo(p.first_seen_ts)}
+                        </div>
+                        {attended.has(p.student_id) && (
+                          <div className="font-mono-nums text-[9px] uppercase tracking-[0.15em] text-[color:var(--ok)]">
+                            ✓ attended
+                          </div>
+                        )}
                       </div>
                     </motion.li>
                   ))}
@@ -949,17 +1126,17 @@ function CapturePage() {
                   label="Send width (px)"
                   value={sendWidth}
                   onChange={setSendWidth}
-                  min={240}
-                  max={1280}
-                  step={40}
+                  min={480}
+                  max={1920}
+                  step={320}
                 />
                 <NumberRow
                   label="Frames / second"
                   value={fps}
                   onChange={setFps}
-                  min={1}
-                  max={8}
-                  step={1}
+                  min={0.5}
+                  max={4}
+                  step={0.5}
                 />
               </div>
             </motion.div>
@@ -1095,7 +1272,8 @@ function NumberRow({
   );
 }
 
-function initials(n: string) {
+function initials(n?: string | null) {
+  if (!n) return "?";
   return n
     .split(/\s+/)
     .map((p) => p[0])

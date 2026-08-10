@@ -30,6 +30,17 @@ function AdminPage() {
 
   return (
     <div className="space-y-6">
+      {/* Sample data notice */}
+      <div className="rounded-md border border-dashed border-[color:var(--warn)]/50 bg-[color:var(--warn)]/5 px-4 py-3">
+        <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--warn)]">
+          ⚠ Sample data — not from this deployment
+        </div>
+        <p className="mt-1 text-xs text-[color:var(--muted)]">
+          All data on this page (devices, users, consents, audit) is sample data for demonstration
+          purposes. In production, these sections read from the live Supabase database.
+        </p>
+      </div>
+
       <div className="flex items-center gap-1 rounded-md border border-[color:var(--line)] bg-[color:var(--surface-2)] p-1">
         {TABS.map((t) => (
           <button

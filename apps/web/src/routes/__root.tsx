@@ -85,6 +85,10 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
+      // Opt out of the Dark Reader browser extension: it rewrites inline styles
+      // (breaking SSR hydration) and inverts the absentee QR to a blank white
+      // square. The app already ships a real dark theme, so it's never needed.
+      { name: "darkreader-lock" },
       { title: "SensePro+ · Classroom Command Center" },
       {
         name: "description",
