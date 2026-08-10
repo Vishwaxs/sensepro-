@@ -95,6 +95,7 @@ def test_ws_session_emits_correct_upsert_sequence(monkeypatch) -> None:
 def test_ws_without_session_id_never_touches_writer(monkeypatch) -> None:
     fake = FakeWriter()
     monkeypatch.setattr(ws_mod, "build_writer", lambda: fake)
+    monkeypatch.setattr(ws_mod, "_load_store", lambda: EmbeddingStore())  # hermetic: no live gallery
     monkeypatch.setattr("app.config.settings.reid_interval_s", 0.0)
 
     client = TestClient(app)

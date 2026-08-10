@@ -94,11 +94,9 @@ def validate_image(path: Path, enroller: Enroller) -> tuple[bool, str, np.ndarra
     if img.shape[0] < 50 or img.shape[1] < 50:
         return False, f"image too small ({img.shape[1]}x{img.shape[0]})", None
 
-    dets = enroller.detector.detect(img)
+    dets = enroller.detector.detect(img, max_num=1)  # enrol = single main subject
     if len(dets) == 0:
         return False, "no face detected", None
-    if len(dets) > 1:
-        return False, f"multiple faces detected ({len(dets)})", None
 
     det = dets[0]
     if det.face_px_height < enroller.cfg.min_face_px:

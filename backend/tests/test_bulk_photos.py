@@ -43,7 +43,7 @@ class FakeDetection:
 class FakeDetector:
     """Returns a fake detection for any reasonably-sized image."""
 
-    def detect(self, img: np.ndarray) -> list:
+    def detect(self, img: np.ndarray, max_num: int = 0) -> list:
         h, w = img.shape[:2]
         if h < 50 or w < 50:
             return []

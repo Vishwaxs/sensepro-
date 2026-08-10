@@ -196,6 +196,7 @@ def main(argv: list[str] | None = None) -> None:
         store=store,
         reid_interval_s=settings.reid_interval_s,
         miss_threshold=settings.miss_threshold,
+        attendance_threshold=settings.attendance_sighting_threshold,
     )
     writer = build_writer()
     session_start = datetime.now(timezone.utc)

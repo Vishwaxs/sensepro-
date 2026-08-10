@@ -131,9 +131,11 @@ def build_embeddings_writer() -> EmbeddingsWriter:
     (RLS is admin-read only, and inserts go through the service role)."""
     from app.config import settings
 
-    if not settings.supabase_url or not settings.supabase_secret_key:
+    if not settings.supabase_url or not settings.supabase_postgrest_key:
         raise EmbeddingsWriterError(
-            "--supabase requires SUPABASE_URL and SUPABASE_SECRET_KEY (the service_role "
-            "key) in the environment/.env. The anon key cannot write embeddings."
+            "--supabase requires SUPABASE_URL and a service_role key "
+            "(SUPABASE_SERVICE_ROLE_KEY — the eyJ… JWT) in the environment/.env. "
+            "PostgREST rejects the sb_secret_ management key, and the anon key "
+            "cannot write embeddings."
         )
-    return EmbeddingsWriter(settings.supabase_url, settings.supabase_secret_key)
+    return EmbeddingsWriter(settings.supabase_url, settings.supabase_postgrest_key)

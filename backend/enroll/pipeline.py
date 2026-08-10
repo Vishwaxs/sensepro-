@@ -144,7 +144,7 @@ class Enroller:
         the detect and embed must run on the same image. Returns None unless
         exactly one face is found and its embedding is non-degenerate.
         """
-        dets = self.detector.detect(img)
+        dets = self.detector.detect(img, max_num=1)
         if len(dets) != 1:
             return None
         vec = self.embedder.embed(img, dets[0])
@@ -163,7 +163,7 @@ class Enroller:
         # Bucket the best candidates per pose bin by sharpness.
         buckets: dict[str, list[tuple[float, np.ndarray, Detection]]] = {}
         for fr in frames:
-            dets = self.detector.detect(fr)
+            dets = self.detector.detect(fr, max_num=1)
             if len(dets) != 1:  # enrolment expects exactly one face
                 continue
             det = dets[0]
@@ -223,7 +223,7 @@ class Enroller:
         reasons: Counter[str] = Counter()
         accepted: list[np.ndarray] = []
         for fr in frames:
-            dets = self.detector.detect(fr)
+            dets = self.detector.detect(fr, max_num=1)
             if len(dets) == 0:
                 reasons["no_face"] += 1
                 continue
