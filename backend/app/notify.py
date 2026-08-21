@@ -434,7 +434,7 @@ async def notify_admin_role_request_with_rate_limit(
       </div>
 
       <div style="text-align:center; margin-top:24px;">
-        <a href="http://localhost:5173/admin" class="btn" style="background:#F59E0B; color:#07070A; padding:12px 28px; font-weight:700; text-decoration:none; border-radius:6px; display:inline-block;">
+        <a href="{settings.app_url}/admin" class="btn" style="background:#F59E0B; color:#07070A; padding:12px 28px; font-weight:700; text-decoration:none; border-radius:6px; display:inline-block;">
           Open Admin Console &rarr;
         </a>
       </div>
@@ -475,7 +475,7 @@ async def notify_user_role_resolved(
           </div>
 
           <div style="text-align:center; margin-top:24px;">
-            <a href="http://localhost:5173/login" class="btn" style="background:#10B981; color:#07070A; padding:12px 28px; font-weight:700; text-decoration:none; border-radius:6px; display:inline-block;">
+            <a href="{settings.app_url}/login" class="btn" style="background:#10B981; color:#07070A; padding:12px 28px; font-weight:700; text-decoration:none; border-radius:6px; display:inline-block;">
               Launch SensePro+ Console &rarr;
             </a>
           </div>

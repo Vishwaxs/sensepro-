@@ -87,6 +87,28 @@ class Settings(BaseSettings):
     zone_front_band: float = 0.66
     zone_back_band: float = 0.33
 
+    # Canonical frontend URL for emails, QR codes, and redirects
+    frontend_url: str = ""
+
+    @property
+    def app_url(self) -> str:
+        """Resolves the canonical public frontend URL for emails, QR codes, and redirects.
+        
+        Priority:
+        1. Explicit `frontend_url` / `FRONTEND_URL` env var (e.g. `https://sensepro-six.vercel.app`)
+        2. First https:// origin in `allow_origins`
+        3. Local dev fallback `http://localhost:5173`
+        """
+        if self.frontend_url and self.frontend_url.strip():
+            return self.frontend_url.strip().rstrip("/")
+
+        for origin in self.allow_origins.split(","):
+            cleaned = origin.strip().rstrip("/")
+            if cleaned.startswith("https://"):
+                return cleaned
+
+        return "http://localhost:5173"
+
     @property
     def supabase_enabled(self) -> bool:
         return bool(
