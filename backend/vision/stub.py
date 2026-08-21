@@ -25,7 +25,7 @@ class StubDetector:
     def __init__(self, min_area: int = 400) -> None:
         self.min_area = min_area
 
-    def detect(self, frame_bgr: np.ndarray) -> list[Detection]:
+    def detect(self, frame_bgr: np.ndarray, max_num: int = 0) -> list[Detection]:
         hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
         _, mask = cv2.threshold(hsv[:, :, 1], 120, 255, cv2.THRESH_BINARY)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -35,6 +35,9 @@ class StubDetector:
                 continue
             x, y, w, h = cv2.boundingRect(c)
             dets.append(Detection(x, y, x + w, y + h, score=0.99))
+        if max_num and len(dets) > max_num:
+            dets.sort(key=lambda d: (d.x2 - d.x1) * (d.y2 - d.y1), reverse=True)
+            dets = dets[:max_num]
         return dets
 
 

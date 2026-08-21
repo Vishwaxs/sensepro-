@@ -17,7 +17,10 @@ from vision.types import Detection
 
 
 class Detector(Protocol):
-    def detect(self, frame_bgr: np.ndarray) -> list[Detection]: ...
+    def detect(self, frame_bgr: np.ndarray, max_num: int = 0) -> list[Detection]:
+        """Detect faces. max_num=0 returns all (live capture); max_num=1 returns
+        only the primary/main face (enrolment, which is always single-subject)."""
+        ...
 
 
 class Embedder(Protocol):

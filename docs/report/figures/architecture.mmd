@@ -1,0 +1,63 @@
+%% SensePro+ System Architecture
+%% Accurate to the real codebase — no aspirational boxes.
+
+graph TB
+  subgraph Capture["Capture Sources"]
+    RTSP["CP Plus RTSP Camera<br/>10.101.40.189"]
+    Browser["Browser Webcam<br/>getUserMedia"]
+    DSLR["DSLR/USB Camera<br/>Enrollment only"]
+  end
+
+  subgraph Backend["FastAPI Backend (Python)"]
+    WS["WebSocket<br/>/ws/capture"]
+    RTSP_CAP["RTSP Capture<br/>cv2.VideoCapture"]
+    PIPELINE["Vision Pipeline<br/>detect → track → re-ID → presence"]
+    PROCTOR["Proctor Engine<br/>phone detect + gaze suppress"]
+    ENGAGE["Engagement<br/>VNEI per zone"]
+    ENROLL["Enrollment API<br/>/v1/enroll/video"]
+  end
+
+  subgraph Database["Supabase (Postgres 15 + pgvector)"]
+    RLS["Row-Level Security<br/>per-role policies"]
+    TABLES["Tables:<br/>students, embeddings,<br/>class_sessions, presence_intervals,<br/>proctor_flags, engagement_zone_aggregates,<br/>audit_log"]
+    RT["Realtime<br/>row change push"]
+  end
+
+  subgraph Frontend["TanStack Start Web UI"]
+    TEACHER["/teacher<br/>Live roster + stats"]
+    MGMT["/management<br/>VNEI + zones"]
+    ADMIN["/admin<br/>Devices + users + audit"]
+    ME["/me<br/>Student self-view"]
+    PROCTORUI["/proctor<br/>Review queue"]
+    ENROLLUI["/enrollment<br/>Video upload"]
+  end
+
+  RTSP -->|RTSP stream| RTSP_CAP
+  Browser -->|WebSocket frames| WS
+  DSLR -->|video file| ENROLL
+
+  WS --> PIPELINE
+  RTSP_CAP --> PIPELINE
+  PIPELINE -->|service role writes| TABLES
+  PIPELINE --> PROCTOR
+  PIPELINE --> ENGAGE
+  PROCTOR -->|proctor_flags| TABLES
+  ENGAGE -->|zone_aggregates| TABLES
+  ENROLL -->|embeddings| TABLES
+
+  TABLES --> RLS
+  RLS --> RT
+  RT -->|Realtime push| TEACHER
+  RT -->|Realtime push| MGMT
+  RLS -->|direct query| ADMIN
+  RLS -->|scoped to auth_uid| ME
+  RLS -->|direct query| PROCTORUI
+  RLS -->|direct query| ENROLLUI
+
+  style Capture fill:#1a1a2e,stroke:#F59E0B,color:#fff
+  style Backend fill:#16213e,stroke:#10B981,color:#fff
+  style Database fill:#0f3460,stroke:#6366F1,color:#fff
+  style Frontend fill:#1a1a2e,stroke:#F59E0B,color:#fff
+
+  classDef note fill:none,stroke:none,color:#888
+  NOTE["⚠ Frames processed in memory — never stored"]:::note

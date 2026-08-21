@@ -1,6 +1,7 @@
 import { createFileRoute, Outlet } from "@tanstack/react-router";
 import { AppShell } from "@/components/sp/AppShell";
 import { useRouterState } from "@tanstack/react-router";
+import { guardRoute } from "@/lib/auth-guard";
 
 const TITLES: Record<string, string> = {
   "/teacher": "Teacher · Live Session",
@@ -11,9 +12,11 @@ const TITLES: Record<string, string> = {
   "/proctor": "Proctor · Review Queue",
   "/trends": "Management · Aggregate Trends",
   "/sessions": "Teacher · Session History",
+  "/start": "Start · New Session",
 };
 
 export const Route = createFileRoute("/_shell")({
+  beforeLoad: guardRoute("authenticated"),
   component: ShellLayout,
 });
 

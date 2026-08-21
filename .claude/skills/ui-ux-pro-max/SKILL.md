@@ -538,17 +538,17 @@ python3 skills/ui-ux-pro-max/scripts/search.py "fintech crypto" --design-system 
 | Problem | What to Do |
 |---------|------------|
 | Can't decide on style/color | Re-run `--design-system` with different keywords |
-| Dark mode contrast issues | Quick Reference §6: `color-dark-mode` + `color-accessible-pairs` |
-| Animations feel unnatural | Quick Reference §7: `spring-physics` + `easing` + `exit-faster-than-enter` |
-| Form UX is poor | Quick Reference §8: `inline-validation` + `error-clarity` + `focus-management` |
-| Navigation feels confusing | Quick Reference §9: `nav-hierarchy` + `bottom-nav-limit` + `back-behavior` |
-| Layout breaks on small screens | Quick Reference §5: `mobile-first` + `breakpoint-consistency` |
-| Performance / jank | Quick Reference §3: `virtualize-lists` + `main-thread-budget` + `debounce-throttle` |
+| Dark mode contrast issues | Quick Reference Section6: `color-dark-mode` + `color-accessible-pairs` |
+| Animations feel unnatural | Quick Reference Section7: `spring-physics` + `easing` + `exit-faster-than-enter` |
+| Form UX is poor | Quick Reference Section8: `inline-validation` + `error-clarity` + `focus-management` |
+| Navigation feels confusing | Quick Reference Section9: `nav-hierarchy` + `bottom-nav-limit` + `back-behavior` |
+| Layout breaks on small screens | Quick Reference Section5: `mobile-first` + `breakpoint-consistency` |
+| Performance / jank | Quick Reference Section3: `virtualize-lists` + `main-thread-budget` + `debounce-throttle` |
 
 ### Pre-Delivery Checklist
 
 - Run `--domain ux "animation accessibility z-index loading"` as a UX validation pass before implementation
-- Run through Quick Reference **§1–§3** (CRITICAL + HIGH) as a final review
+- Run through Quick Reference **Section1–Section3** (CRITICAL + HIGH) as a final review
 - Test on 375px (small phone) and landscape orientation
 - Verify behavior with **reduced-motion** enabled and **Dynamic Type** at largest size
 - Check dark mode contrast independently (don't assume light mode values work)

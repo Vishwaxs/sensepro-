@@ -34,10 +34,12 @@ function GlowBorderRaw({
       >
         <div
           className="absolute inset-[-200%] animate-[glow-spin_var(--dur)_linear_infinite]"
-          style={{
-            "--dur": `${duration}s`,
-            background: `conic-gradient(from 0deg, transparent 0%, ${color} 10%, transparent 20%)`,
-          } as React.CSSProperties}
+          style={
+            {
+              "--dur": `${duration}s`,
+              background: `conic-gradient(from 0deg, transparent 0%, ${color} 10%, transparent 20%)`,
+            } as React.CSSProperties
+          }
         />
         <div
           className="absolute inset-[1px] rounded-[inherit]"

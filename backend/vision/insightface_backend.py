@@ -9,6 +9,8 @@ pack and compute embeddings only.
 
 from __future__ import annotations
 
+import threading
+
 import numpy as np
 
 from vision.types import Detection
@@ -17,19 +19,45 @@ EMB_DIM = 512
 
 
 class InsightFaceBackend:
-    def __init__(self, det_size: int = 640) -> None:
+    """A single instance is shared process-wide (see vision/pipeline.py's
+    singleton) so the ~300MB model pack loads once instead of per session.
+
+    detect() and embed() are called back-to-back for one frame inside a single
+    run_in_threadpool call, so they always run on the SAME OS thread for a
+    given session — but two sessions' frames can run concurrently on
+    DIFFERENT threads. The per-call face list is therefore kept thread-local
+    rather than on self, so one session's embed() can never read another
+    session's detect() output."""
+
+    def __init__(
+        self,
+        det_size: int = 640,
+        det_thresh: float = 0.5,
+        min_face_px: int = 0,
+    ) -> None:
         from insightface.app import FaceAnalysis  # lazy
 
-        self.app = FaceAnalysis(name="buffalo_l")
-        self.app.prepare(ctx_id=0, det_size=(det_size, det_size))
-        self._faces_cache: list = []
+        # Load ONLY the two nets this pipeline reads. buffalo_l also ships
+        # genderage and two landmark models that FaceAnalysis runs on every
+        # face by default, at a real per-frame cost we never use — the 5-point
+        # kps used for head pose come from the detector, so they survive this.
+        self.app = FaceAnalysis(name="buffalo_l", allowed_modules=["detection", "recognition"])
+        self.app.prepare(ctx_id=0, det_size=(det_size, det_size), det_thresh=det_thresh)
+        self._min_face_px = min_face_px
+        self._local = threading.local()
 
-    def detect(self, frame_bgr: np.ndarray) -> list[Detection]:
-        faces = self.app.get(frame_bgr)
-        self._faces_cache = faces
+    def detect(self, frame_bgr: np.ndarray, max_num: int = 0) -> list[Detection]:
+        # max_num=0 -> all faces (live capture); max_num=1 -> the single main
+        # subject (enrolment). SCRFD over-fires on very high-res single portraits;
+        # app.get's max_num post-processing returns just the primary face.
+        faces = self.app.get(frame_bgr, max_num=max_num)
+        self._local.faces_cache = faces
         dets: list[Detection] = []
         for f in faces:
             x1, y1, x2, y2 = f.bbox
+            face_h = abs(y2 - y1)
+            if self._min_face_px > 0 and face_h < self._min_face_px:
+                continue
             lmk = [(float(p[0]), float(p[1])) for p in getattr(f, "kps", [])]
             dets.append(
                 Detection(
@@ -44,9 +72,11 @@ class InsightFaceBackend:
         return dets
 
     def embed(self, frame_bgr: np.ndarray, det: Detection) -> np.ndarray:
-        # Match the detection back to the cached face by bbox proximity.
+        # Match the detection back to this THREAD's most recent detect() call
+        # (see class docstring — never a shared/self-owned cache).
+        faces = getattr(self._local, "faces_cache", [])
         best, best_d = None, 1e9
-        for f in self._faces_cache:
+        for f in faces:
             fx = (f.bbox[0] + f.bbox[2]) / 2
             fy = (f.bbox[1] + f.bbox[3]) / 2
             cx = (det.x1 + det.x2) / 2

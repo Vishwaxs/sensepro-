@@ -1,15 +1,72 @@
+# Python
 __pycache__/
 *.pyc
+*.pyo
 .venv/
 venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Secrets — never commit
 .env
+.env.local
+.env.*.local
+
+# Databases
 *.sqlite3
 *.db
 models/*.onnx
+
+# Node
 node_modules/
 .next/
 dist/
+.tanstack/**
+*.log
+
+# OS
 .DS_Store
-.pytest_cache/
-.ruff_cache/
-*.egg-info/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Privacy — biometric source media (consent invariant)
+"Edited Images"/
+Edited Images/
+Edited_Images/
+
+# Deny-list: misc root files that must never be committed
+4MCAB.pdf
+*.err
+pdf_content.txt
+extract_pdf_data.py
+COPILOT_HANDOFF.md
+SensePro_*.md
+cursor_chat_codebase_comparison_report.json
+Codebase Audit And Comparison.md
+codex_merge_prompt.md
+prompt_fix nams.md
+# Scripts that contain hardcoded student PII (email/name) — never commit
+apps/web/scripts/create_student_user.mjs
+supabase/scripts/create_student_user.mjs
+
+# Raw enrollment media — never copy into repo
+*.mp4
+*.mov
+*.avi
+*.webm
+enrollment_photos/
+enrollment_videos/
+
+# Biometric contact sheets — student faces
+enroll_prepared_contact_sheet.jpg
+
+# Planning / chat transcripts — not project source
+prompt.md
+SensePro+*
+
+# Pretrained detector weights fetched at build/run time, never committed.
+*.pt

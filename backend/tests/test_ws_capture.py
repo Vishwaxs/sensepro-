@@ -4,13 +4,16 @@ Proves the browser-capture loop: client sends frames -> server returns faces +
 presence transitions -> session ends cleanly. No ML models required.
 """
 
+from tests.conftest import STAFF_WS_TOKEN
 import base64
+import json
 
 import cv2
 import numpy as np
 from fastapi.testclient import TestClient
 
 from app.main import app
+from vision.embedding_store import EmbeddingStore
 
 
 def _marker_frame(bgr=(0, 0, 255)) -> str:
@@ -31,9 +34,12 @@ def _blank_frame() -> str:
 def test_capture_loop_detects_and_marks_present(monkeypatch) -> None:
     # reid every frame; small miss threshold so we can drive ABSENT quickly
     monkeypatch.setenv("REID_INTERVAL_S", "0")
+    # Hermetic: no live gallery (this test only checks the frame->result plumbing,
+    # not identity). Without this it would read whatever is in a configured Supabase.
+    monkeypatch.setattr("app.ws._load_store", lambda: EmbeddingStore())
     client = TestClient(app)
     face = _marker_frame()
-    with client.websocket_connect("/ws/capture") as ws:
+    with client.websocket_connect(f"/ws/capture?token={STAFF_WS_TOKEN}") as ws:
         # frame 1: a face is present -> a track appears
         ws.send_json({"type": "frame", "ts": 0.0, "jpg_b64": face})
         r1 = ws.receive_json()
@@ -47,7 +53,7 @@ def test_capture_loop_detects_and_marks_present(monkeypatch) -> None:
 
 def test_bad_frame_is_handled() -> None:
     client = TestClient(app)
-    with client.websocket_connect("/ws/capture") as ws:
+    with client.websocket_connect(f"/ws/capture?token={STAFF_WS_TOKEN}") as ws:
         ws.send_json({"type": "frame", "ts": 0.0, "jpg_b64": "not-base64!!"})
         r = ws.receive_json()
         assert r["type"] == "error"
@@ -55,3 +61,67 @@ def test_bad_frame_is_handled() -> None:
 
 def test_health() -> None:
     assert TestClient(app).get("/health").json()["status"] == "ok"
+
+
+def test_load_store_uses_json_when_supabase_disabled(tmp_path, monkeypatch) -> None:
+    from app import ws
+
+    p = tmp_path / "enroll.json"
+    p.write_text(json.dumps({"s1": [[1.0, 0.0, 0.0]]}))
+    monkeypatch.setattr(ws.settings, "supabase_url", "")
+    monkeypatch.setattr(ws.settings, "supabase_secret_key", "")
+    monkeypatch.setattr(ws.settings, "enrollment_json", str(p))
+
+    store = ws._load_store()
+    assert store.roster == {"s1"}
+
+
+def test_load_store_falls_back_to_json_on_supabase_error(tmp_path, monkeypatch) -> None:
+    """A misconfigured/unreachable DB must never leave capture without a gallery."""
+    from app import ws
+
+    p = tmp_path / "enroll.json"
+    p.write_text(json.dumps({"s1": [[1.0, 0.0, 0.0]]}))
+    monkeypatch.setattr(ws.settings, "supabase_url", "http://127.0.0.1:1")
+    monkeypatch.setattr(ws.settings, "supabase_secret_key", "k")
+    monkeypatch.setattr(ws.settings, "enrollment_json", str(p))
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(ws.EmbeddingStore, "from_supabase", _raise)
+
+    store = ws._load_store()
+    assert store.roster == {"s1"}
+
+
+def test_capture_socket_rejects_unauthenticated_connection():
+    """/ws/capture is the attendance write path — it must not accept anyone.
+
+    Whatever session_id this socket is handed gets presence rows written, and
+    every frame costs a detector pass plus ArcFace forward passes. It used to
+    call ws.accept() unconditionally, so anyone who could reach the port could
+    mark a class present or simply exhaust the inference budget.
+    """
+    import pytest
+    from starlette.websockets import WebSocketDisconnect
+
+    client = TestClient(app)
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect("/ws/capture") as ws:
+            ws.receive_json()
+    assert exc.value.code == 1008  # policy violation
+
+
+def test_capture_socket_rejects_a_student_token():
+    """Authenticated is not enough — the socket is staff-only."""
+    import pytest
+    from starlette.websockets import WebSocketDisconnect
+
+    from tests.conftest import staff_token
+
+    client = TestClient(app)
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect(f"/ws/capture?token={staff_token('student')}") as ws:
+            ws.receive_json()
+    assert exc.value.code == 1008

@@ -4,18 +4,12 @@ info:
   title: SensePro+ API
   version: "0.1.0"
   description: |
-    FROZEN for Phase 1 — changes require an ADR.
+    Contract consumed by the frontend. It covers the implemented health check,
+    authenticated session create/end lifecycle, and `/ws/capture` channel.
+    Routes still marked `x-phase: 2` are placeholders and are not implemented.
 
-    Single source of truth the frontend consumes. Two surfaces:
-      1. Implemented today: GET /health and the /ws/capture WebSocket channel.
-         The WebSocket message schemas below mirror backend/app/ws.py and
-         backend/vision/pipeline.py exactly — do not let them drift.
-      2. Week-2 REST stubs (tagged `x-phase: 2`): schemas are defined now so the
-         UI can mock against them, but the routes are NOT implemented yet. The
-         backend is database-centric — dashboards read directly from Postgres via
-         Supabase RLS + Realtime (see ADR 0004); FastAPI's service role is used
-         only for the vision write-path. These REST routes are the narrow set the
-         UI genuinely needs beyond direct DB reads.
+    The WebSocket schemas mirror `backend/app/ws.py` and
+    `backend/vision/pipeline.py`. Frames are processed in memory and discarded.
 
     Enum and field names follow the database schema (supabase/migrations/0001_init.sql)
     as authoritative: zones are `front|mid|back` (aggregates add `class`), session
@@ -30,9 +24,9 @@ tags:
   - name: capture
     description: Live browser-capture WebSocket channel.
   - name: sessions
-    description: REST stubs — implemented in Week 2.
+    description: Authenticated class-session lifecycle.
   - name: students
-    description: REST stubs — implemented in Week 2.
+    description: Student read placeholders; dashboards normally use Supabase RLS.
 
 paths:
   /health:
@@ -55,33 +49,60 @@ paths:
       summary: WebSocket capture channel (not a plain GET).
       description: |
         **This is a WebSocket endpoint**, documented as a GET path because
-        OpenAPI 3.1 has no native WebSocket type. Open with
-        `new WebSocket("ws://<host>/ws/capture")`. All frames are JSON text.
-        The server creates one session pipeline per connection (= per class
-        session). Frames are decoded, run through the vision pipeline, and
-        discarded in memory — never persisted.
+        OpenAPI 3.1 has no native WebSocket operation. A verified teacher/admin
+        access token is required in the `token` query parameter.
+
+        `mode` is query-only and defaults to `lecture`; a session id does not
+        infer or override it. `session_id` may be supplied in the query or a
+        client message before attachment. The first non-empty id attaches
+        persistence. With no id, recognition still runs but no session writes
+        or live engagement / proctor view are created.
 
         Client → server messages:
-          - `FrameMessage`  {type:"frame", ts, jpg_b64}   (send at 1/fps)
+          - `FrameMessage`  {type:"frame", ts, jpg_b64, session_id?}
           - `EndMessage`    {type:"end", ts}
 
         Server → client messages:
-          - `ResultMessage`        {type:"result", ts, faces[], transitions[], present[]}
-          - `ErrorMessage`         {type:"error", detail}   (bad frame / unknown type; connection stays open)
-          - `SessionEndedMessage`  {type:"session_ended", ts}  (reply to EndMessage; server then closes)
+          - `ResultMessage` with attendance plus optional mode-specific views
+          - `ErrorMessage` (connection stays open)
+          - `SessionEndedMessage` (reply to `end`; server then closes)
 
-        `Face.box` is `[x1, y1, x2, y2]` in the pixel space of the SENT
-        (downscaled) frame; the client scales it to the displayed video.
+        An explicit `end` also ends the attached database session. A transport
+        disconnect only cleans up connection state so the client can reconnect.
+      parameters:
+        - name: token
+          in: query
+          required: true
+          description: Short-lived verified access token for a teacher/admin user.
+          schema:
+            type: string
+        - name: mode
+          in: query
+          required: false
+          description: Processing mode for this socket; defaults to lecture.
+          schema:
+            $ref: "#/components/schemas/SessionMode"
+            default: lecture
+        - name: session_id
+          in: query
+          required: false
+          description: Existing class session to attach; may instead be sent in the first message.
+          schema:
+            type: string
+            format: uuid
       responses:
         "101":
           description: Switching Protocols — WebSocket handshake accepted.
+        "403":
+          description: Handshake rejected; socket closes with policy code 1008.
 
   /v1/sessions:
     post:
       tags: [sessions]
       operationId: createSession
-      summary: Start a class session. (Week 2 — not implemented yet.)
-      x-phase: 2
+      summary: Start a class session (teacher/admin only).
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -96,12 +117,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/Session"
 
-  /v1/sessions/{id}/end:
+  /v1/sessions/{session_id}/end:
     post:
       tags: [sessions]
       operationId: endSession
-      summary: End a class session. (Week 2 — not implemented yet.)
-      x-phase: 2
+      summary: End a class session (teacher/admin only).
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: "#/components/parameters/SessionId"
       responses:
@@ -110,9 +132,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Session"
+                $ref: "#/components/schemas/SessionEnd"
 
-  /v1/sessions/{id}:
+  /v1/sessions/{session_id}:
     get:
       tags: [sessions]
       operationId: getSession
@@ -174,9 +196,15 @@ paths:
                   $ref: "#/components/schemas/PresenceInterval"
 
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
   parameters:
     SessionId:
-      name: id
+      name: session_id
       in: path
       required: true
       schema:
@@ -187,7 +215,7 @@ components:
     # ---------------- health ----------------
     Health:
       type: object
-      required: [status, service, vision_backend]
+      required: [status, service, vision_backend, proctor_backend]
       properties:
         status:
           type: string
@@ -199,6 +227,10 @@ components:
           type: string
           description: Active vision backend (VISION_BACKEND env).
           enum: [stub, insightface]
+        proctor_backend:
+          type: string
+          description: Configured object detector for exam/workshop signals.
+          enum: [stub, yolo]
 
     # ---------------- shared enums ----------------
     PresenceState:
@@ -228,6 +260,10 @@ components:
         jpg_b64:
           type: string
           description: Base64-encoded JPEG of the downscaled frame (no data-URI prefix).
+        session_id:
+          type: string
+          format: uuid
+          description: Optional attachment when it was not supplied in the query.
 
     EndMessage:
       type: object
@@ -237,6 +273,10 @@ components:
           const: end
         ts:
           type: number
+        session_id:
+          type: string
+          format: uuid
+          description: Optional attachment when it was not supplied in the query.
 
     ClientMessage:
       oneOf:
@@ -278,7 +318,7 @@ components:
 
     ResultMessage:
       type: object
-      required: [type, ts, faces, transitions, present]
+      required: [type, ts, faces, transitions, present, attended]
       properties:
         type:
           const: result
@@ -298,6 +338,187 @@ components:
           description: Sorted student ids currently in the PRESENT state.
           items:
             type: string
+        attended:
+          type: array
+          description: Sorted ids that crossed the configured attendance sighting threshold.
+          items:
+            type: string
+        proctor:
+          description: Present only for an attached exam session.
+          $ref: "#/components/schemas/ProctorView"
+        engagement:
+          description: Present for any attached lecture, exam, or workshop session.
+          $ref: "#/components/schemas/EngagementView"
+
+    ProctorDetection:
+      type: object
+      required: [label, box, confidence, student_id]
+      properties:
+        label:
+          type: string
+          enum: [cell phone]
+        box:
+          type: array
+          description: Temporally confirmed box in sent-frame pixels.
+          items:
+            type: integer
+          minItems: 4
+          maxItems: 4
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        student_id:
+          type: [string, "null"]
+
+    ProctorFlag:
+      type: object
+      required: [id, flag_type, student_id, flagged_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        flag_type:
+          type: string
+          enum: [phone, extra_person, head_pose]
+        student_id:
+          type: [string, "null"]
+        flagged_at:
+          type: string
+          format: date-time
+
+    HeadPose:
+      type: object
+      required: [track_id, student_id, yaw, pitch, state]
+      properties:
+        track_id:
+          type: integer
+        student_id:
+          type: [string, "null"]
+        yaw:
+          type: number
+        pitch:
+          type: number
+        state:
+          type: string
+          enum: [neutral, away, sustained_away]
+
+    ProctorView:
+      type: object
+      required: [detections, flags, backend, ready, poses]
+      properties:
+        detections:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProctorDetection"
+        flags:
+          type: array
+          description: New pending human-review rows written for this frame.
+          items:
+            $ref: "#/components/schemas/ProctorFlag"
+        backend:
+          type: [string, "null"]
+          enum: [stub, yolo, null]
+        ready:
+          type: boolean
+        poses:
+          type: array
+          items:
+            $ref: "#/components/schemas/HeadPose"
+        error:
+          type: [string, "null"]
+
+    PhoneDetectorStatus:
+      type: object
+      required: [backend, ready, production]
+      properties:
+        backend:
+          type: [string, "null"]
+          enum: [stub, yolo, null]
+        ready:
+          type: boolean
+        production:
+          type: boolean
+        error:
+          type: [string, "null"]
+
+    EngagementWindow:
+      type: object
+      required: [state, window_s, elapsed_s, remaining_s, completed_windows, last_window]
+      properties:
+        state:
+          type: string
+          enum: [waiting, collecting]
+        window_s:
+          type: integer
+        elapsed_s:
+          type: number
+        remaining_s:
+          type: number
+        completed_windows:
+          type: integer
+        last_window:
+          type: [object, "null"]
+          additionalProperties: true
+
+    EngagementView:
+      type: object
+      required:
+        - visible
+        - observable
+        - attending
+        - head_down
+        - phone
+        - phone_observed
+        - still
+        - moving
+        - still_observed
+        - vnei
+        - k_min
+        - suppressed
+        - suppression_reason
+        - window
+        - reported_zones
+      properties:
+        visible:
+          type: integer
+        observable:
+          type: integer
+        attending:
+          type: integer
+        head_down:
+          type: integer
+        phone:
+          type: [integer, "null"]
+          description: Null when phone inference was unavailable.
+        phone_observed:
+          type: integer
+        still:
+          type: integer
+        moving:
+          type: integer
+        still_observed:
+          type: integer
+        vnei:
+          type: [number, "null"]
+          minimum: 0
+          maximum: 1
+        k_min:
+          type: integer
+        suppressed:
+          type: boolean
+        suppression_reason:
+          type: [string, "null"]
+          enum: [privacy_floor, insufficient_pose_observations, null]
+        window:
+          $ref: "#/components/schemas/EngagementWindow"
+        reported_zones:
+          type: array
+          items:
+            $ref: "#/components/schemas/Zone"
+        phone_detector:
+          description: Present only in exam/workshop modes.
+          $ref: "#/components/schemas/PhoneDetectorStatus"
 
     ErrorMessage:
       type: object
@@ -308,15 +529,20 @@ components:
         detail:
           type: string
           description: e.g. "bad frame", "unknown message type". Connection stays open.
+        fatal:
+          type: boolean
+          description: True when this frame's inference failed; the socket remains usable.
 
     SessionEndedMessage:
       type: object
-      required: [type, ts]
+      required: [type, ts, mode]
       properties:
         type:
           const: session_ended
         ts:
           type: number
+        mode:
+          $ref: "#/components/schemas/SessionMode"
 
     ServerMessage:
       oneOf:
@@ -326,7 +552,7 @@ components:
       discriminator:
         propertyName: type
 
-    # ---------------- REST resources (Week 2) ----------------
+    # ---------------- REST resources ----------------
     Student:
       type: object
       required: [id, reg_no, full_name, class_section]
@@ -345,7 +571,7 @@ components:
 
     SessionCreate:
       type: object
-      required: [class_section, mode]
+      required: [class_section]
       properties:
         class_section:
           type: string
@@ -353,6 +579,7 @@ components:
           type: [string, "null"]
         mode:
           $ref: "#/components/schemas/SessionMode"
+          default: lecture
 
     Session:
       type: object
@@ -373,6 +600,16 @@ components:
         ends_at:
           type: [string, "null"]
           format: date-time
+
+    SessionEnd:
+      type: object
+      required: [id, ended]
+      properties:
+        id:
+          type: string
+          format: uuid
+        ended:
+          const: true
 
     PresenceInterval:
       type: object
