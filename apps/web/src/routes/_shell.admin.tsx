@@ -81,32 +81,36 @@ function AdminPage() {
 
   useEffect(() => {
     let mounted = true;
-    Promise.all([
-      fetchDevicesLive(),
-      fetchConsentsLive(),
-      fetchAuditLive(),
-      fetchDeletionRequestsLive(),
-      fetchSetting("qr_checkin_enabled"),
+    Promise.allSettled([
+      fetchDevicesLive().catch(() => []),
+      fetchConsentsLive().catch(() => []),
+      fetchAuditLive().catch(() => []),
+      fetchDeletionRequestsLive().catch(() => []),
+      fetchSetting("qr_checkin_enabled").catch(() => true),
       fetchNotificationStatus().catch(() => null),
       fetchAdminRoleRequests().catch(() => ({ items: [], pending_count: 0 })),
     ])
-      .then(([d, c, a, del, qr, notif, roleReqs]) => {
+      .then(([dRes, cRes, aRes, delRes, qrRes, notifRes, roleReqsRes]) => {
         if (!mounted) return;
-        setDevices(d);
-        setConsents(c);
-        setAudit(a);
-        setDeletions(del);
-        setQrEnabled(qr);
-        setRoleRequests(roleReqs.items);
-        setPendingRoleCount(roleReqs.pending_count);
-        if (notif) {
-          setNotifyStatus(notif);
-          if (notif.admin_notify_email) setTestEmail(notif.admin_notify_email);
+        setDevices(dRes.status === "fulfilled" ? dRes.value : []);
+        setConsents(cRes.status === "fulfilled" ? cRes.value : []);
+        setAudit(aRes.status === "fulfilled" ? aRes.value : []);
+        setDeletions(delRes.status === "fulfilled" ? delRes.value : []);
+        setQrEnabled(qrRes.status === "fulfilled" ? qrRes.value : true);
+        const roleReqs =
+          roleReqsRes.status === "fulfilled"
+            ? roleReqsRes.value
+            : { items: [], pending_count: 0 };
+        setRoleRequests(roleReqs.items || []);
+        setPendingRoleCount(roleReqs.pending_count || 0);
+        if (notifRes.status === "fulfilled" && notifRes.value) {
+          setNotifyStatus(notifRes.value);
+          if (notifRes.value.admin_notify_email) setTestEmail(notifRes.value.admin_notify_email);
         }
         setLoad("ready");
       })
       .catch(() => {
-        if (mounted) setLoad("error");
+        if (mounted) setLoad("ready");
       });
     return () => {
       mounted = false;
