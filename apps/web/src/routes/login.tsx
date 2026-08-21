@@ -26,18 +26,15 @@ function LoginPage() {
   const isDark = theme === "dark";
   const { isSignedIn, isLoaded, user } = useUser();
   const [mode, setMode] = useState<"signin" | "signup">("signin");
-  const [isSsoCallback, setIsSsoCallback] = useState(false);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
-      const isCallback =
-        window.location.hash.includes("sso-callback") ||
-        window.location.search.includes("sso-callback") ||
-        window.location.pathname.includes("sso-callback");
-      if (isCallback) {
-        setIsSsoCallback(true);
-      }
-      if (window.location.hash.includes("sign_up") || window.location.hash.includes("sign-up")) {
+      const hash = window.location.hash;
+      if (
+        hash.includes("sign_up") ||
+        hash.includes("sign-up") ||
+        hash.includes("continue")
+      ) {
         setMode("signup");
       }
     }
@@ -52,26 +49,6 @@ function LoginPage() {
       nav({ to: target });
     }
   }, [isLoaded, isSignedIn, user, returnTo, nav]);
-
-  // If completing OAuth SSO callback
-  if (isSsoCallback) {
-    return (
-      <div className="app-bg grain-overlay relative flex min-h-screen items-center justify-center">
-        <div className="flex flex-col items-center gap-3">
-          <div className="h-6 w-6 animate-spin rounded-full border-2 border-[color:var(--primary)] border-t-transparent" />
-          <span className="font-mono-nums text-xs uppercase tracking-widest text-[color:var(--muted)]">
-            Completing authentication...
-          </span>
-          <div className="opacity-0 h-0 overflow-hidden pointer-events-none">
-            <AuthenticateWithRedirectCallback
-              signInFallbackRedirectUrl={returnTo || "/teacher"}
-              signUpFallbackRedirectUrl={returnTo || "/teacher"}
-            />
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   // If already signed in and redirecting, render a clean loading spinner instead of the login box
   if (isLoaded && isSignedIn) {
