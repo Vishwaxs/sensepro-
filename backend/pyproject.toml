@@ -9,9 +9,10 @@ dependencies = [
   "numpy>=1.26",
   "opencv-python-headless>=4.9",
   "python-multipart>=0.0.9",
+  "httpx>=0.27",
 ]
 [project.optional-dependencies]
-dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.4"]
+dev = ["pytest>=8", "ruff>=0.4"]
 # Production vision backend (installed on the dev/inference machine):
 insightface = ["insightface>=0.7.3", "onnxruntime>=1.17"]
 # Supabase write-path (presence persistence). httpx-only PostgREST client; no
