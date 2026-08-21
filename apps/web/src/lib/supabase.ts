@@ -13,11 +13,6 @@ if (!url || !anonKey) {
 
 /**
  * Auth-only client for the legacy Supabase login fallback.
- *
- * supabase-js intentionally disables its auth namespace when an external
- * accessToken callback is configured. Keeping this client separate lets the
- * data client above forward Clerk tokens to PostgREST/Realtime without
- * changing the existing Supabase OAuth/session lifecycle.
  */
 export const supabaseAuth = createClient(url, anonKey, {
   auth: {
@@ -28,27 +23,12 @@ export const supabaseAuth = createClient(url, anonKey, {
 
 export const supabase = createClient(url, anonKey, {
   accessToken: async () => {
-    if (typeof window === "undefined") return null;
-
-    const clerk = (
-      window as unknown as {
-        Clerk?: {
-          session?: { getToken: () => Promise<string | null> };
-        };
-      }
-    ).Clerk;
-
-    if (clerk?.session) {
-      try {
-        const token = await clerk.session.getToken();
-        if (token) return token;
-      } catch {
-        // A transient Clerk refresh failure can still fall back to a valid
-        // Supabase session for installations that keep the legacy login path.
-      }
+    try {
+      const { data } = await supabaseAuth.auth.getSession();
+      return data.session?.access_token ?? null;
+    } catch {
+      return null;
     }
-
-    const { data } = await supabaseAuth.auth.getSession();
-    return data.session?.access_token ?? null;
   },
 });
+

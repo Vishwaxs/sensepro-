@@ -100,11 +100,10 @@ def _resolve(token: str) -> tuple[str, str | None]:
         pass
 
     if is_clerk:
-        jwks_url = getattr(settings, "clerk_jwks_url", "")
-        if not jwks_url and clerk_iss:
+        if clerk_iss:
             jwks_url = f"{clerk_iss.rstrip('/')}/.well-known/jwks.json"
-        if not jwks_url:
-            jwks_url = "https://funny-teal-523.clerk.accounts.dev/.well-known/jwks.json"
+        else:
+            jwks_url = getattr(settings, "clerk_jwks_url", "https://funny-teal-523.clerk.accounts.dev/.well-known/jwks.json")
 
         try:
             jwk_client = _get_jwks_client(jwks_url)
@@ -119,29 +118,38 @@ def _resolve(token: str) -> tuple[str, str | None]:
             if not uid:
                 raise HTTPException(401, "Invalid Clerk session")
 
-            # `role` is reserved by Supabase/PostgREST and normally contains
-            # `authenticated`; it is not an application authorisation role.
-            # Unsafe metadata is user-editable in Clerk and must never grant
-            # staff access. Only the explicit app claim/public metadata counts.
+            # 1. Check claims inside token
             candidate = data.get("app_role") or (data.get("public_metadata") or {}).get("role")
             role = candidate if candidate in {"teacher", "management", "admin", "student"} else None
 
-            # If role is not baked into the raw session JWT, query Clerk API using clerk_secret_key
-            if not role and settings.clerk_secret_key and uid.startswith("user_"):
-                try:
-                    with httpx.Client(timeout=4.0) as client:
-                        clerk_resp = client.get(
-                            f"https://api.clerk.com/v1/users/{uid}",
-                            headers={"Authorization": f"Bearer {settings.clerk_secret_key}"},
-                        )
-                        if clerk_resp.status_code == 200:
-                            u_data = clerk_resp.json()
-                            c_role = (u_data.get("public_metadata") or {}).get("role")
-                            if c_role in {"teacher", "management", "admin", "student"}:
-                                role = c_role
-                except Exception:
-                    pass
+            # 2. If role is not in raw JWT, query Clerk API using configured secret keys
+            if not role and uid.startswith("user_"):
+                import os
+                candidate_keys = [
+                    getattr(settings, "clerk_secret_key", ""),
+                    getattr(settings, "vite_clerk_secret_key", ""),
+                    os.environ.get("CLERK_SECRET_KEY", ""),
+                    os.environ.get("VITE_CLERK_SECRET_KEY", ""),
+                ]
+                for key in candidate_keys:
+                    if not key:
+                        continue
+                    try:
+                        with httpx.Client(timeout=4.0) as client:
+                            clerk_resp = client.get(
+                                f"https://api.clerk.com/v1/users/{uid}",
+                                headers={"Authorization": f"Bearer {key}"},
+                            )
+                            if clerk_resp.status_code == 200:
+                                u_data = clerk_resp.json()
+                                c_role = (u_data.get("public_metadata") or {}).get("role")
+                                if c_role in {"teacher", "management", "admin", "student"}:
+                                    role = c_role
+                                    break
+                    except Exception:
+                        continue
 
+            # 3. If still not resolved, query Supabase database
             if not role and settings.supabase_enabled:
                 try:
                     writer = _writer()
