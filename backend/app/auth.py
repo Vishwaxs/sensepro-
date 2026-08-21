@@ -125,13 +125,38 @@ def _resolve(token: str) -> tuple[str, str | None]:
             # staff access. Only the explicit app claim/public metadata counts.
             candidate = data.get("app_role") or (data.get("public_metadata") or {}).get("role")
             role = candidate if candidate in {"teacher", "management", "admin", "student"} else None
+
+            # If role is not baked into the raw session JWT, query Clerk API using clerk_secret_key
+            if not role and settings.clerk_secret_key and uid.startswith("user_"):
+                try:
+                    with httpx.Client(timeout=4.0) as client:
+                        clerk_resp = client.get(
+                            f"https://api.clerk.com/v1/users/{uid}",
+                            headers={"Authorization": f"Bearer {settings.clerk_secret_key}"},
+                        )
+                        if clerk_resp.status_code == 200:
+                            u_data = clerk_resp.json()
+                            c_role = (u_data.get("public_metadata") or {}).get("role")
+                            if c_role in {"teacher", "management", "admin", "student"}:
+                                role = c_role
+                except Exception:
+                    pass
+
             if not role and settings.supabase_enabled:
                 try:
                     writer = _writer()
                     role = writer.role_for_auth_uid(uid)
+                    if not role:
+                        # Check approved role_requests
+                        reqs = writer.list_role_requests(status="approved", limit=20)
+                        for r in reqs:
+                            if r.get("user_id") == uid:
+                                role = r.get("resolved_role") or r.get("requested_role")
+                                break
                     writer.close()
                 except Exception:
                     pass
+
             with _lock:
                 if len(_cache) > 512:
                     _cache.clear()
