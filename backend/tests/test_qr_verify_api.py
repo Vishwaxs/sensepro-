@@ -176,6 +176,16 @@ def test_session_ended(monkeypatch):
     assert _verify().status_code == 409
 
 
+@pytest.mark.parametrize("mode", ["exam", "workshop"])
+def test_non_attendance_session_rejects_qr_verification(monkeypatch, mode):
+    writer = FakeVerifyWriter(session={**SESSION, "mode": mode}, templates=TEMPLATE)
+    _patch(monkeypatch, writer, probe=[1.0, 0.0])
+    r = _verify()
+    assert r.status_code == 409
+    assert "attendance" in r.json()["detail"].lower()
+    assert writer.presence == []
+
+
 # --- identity / enrolment guards ---------------------------------------------
 def test_not_a_student(monkeypatch):
     writer = FakeVerifyWriter(student=None)
@@ -206,11 +216,31 @@ def test_satisfy_race_lost_writes_no_presence(monkeypatch):
 
 
 def test_rate_limited(monkeypatch):
+    """Selfie retries have their OWN budget, larger than the claim budget.
+
+    These two shared one 6-per-minute counter, so a student who claimed a token
+    and then retook their selfie a few times — the normal outcome in poor light
+    — was locked out for a minute inside a 30-second verification window. A
+    retry is the student cooperating: it costs one face match and can only ever
+    satisfy a window they already hold. The cap still exists, just above the
+    number of attempts a real person makes.
+    """
     writer = FakeVerifyWriter(templates=TEMPLATE)
     _patch(monkeypatch, writer, probe=[1.0, 0.0])
-    for _ in range(qr.CLAIM_RATE_MAX):
+    assert qr.VERIFY_RATE_MAX > qr.CLAIM_RATE_MAX
+    for _ in range(qr.VERIFY_RATE_MAX):
         assert _verify().status_code == 200
     assert _verify().status_code == 429
+
+
+def test_claim_budget_is_not_consumed_by_selfie_retries(monkeypatch):
+    """Burning through selfie retries must not block claiming the next code."""
+    writer = FakeVerifyWriter(templates=TEMPLATE)
+    _patch(monkeypatch, writer, probe=[1.0, 0.0])
+    for _ in range(qr.CLAIM_RATE_MAX + 1):
+        _verify()
+    # The claim bucket for this same user is still untouched.
+    qr._rate_limit("uid-1")  # would raise HTTPException(429) if shared
 
 
 def test_oversize_selfie_rejected(monkeypatch):

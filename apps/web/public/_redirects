@@ -1,0 +1,5 @@
+# SPA fallback for Cloudflare Pages and Netlify. Both check the filesystem
+# first, so real assets still win; only client-side routes (/teacher, /capture,
+# /auth/callback …) fall through to the prerendered shell. Vercel ignores this
+# file and uses the rewrites in vercel.json instead.
+/*    /_shell.html   200

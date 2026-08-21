@@ -25,7 +25,7 @@ Design and implement a **privacy-preserving, camera-based classroom attendance a
 
 **In scope:** Single-classroom deployment, DSLR + webcam + RTSP capture, Supabase backend, TanStack Start web UI, four roles (teacher, management, admin, student).
 
-**Out of scope:** Multi-building deployment, liveness detection, self-enrollment kiosk, QR→face-verify flow (reserved for Phase 5 per §18 of the PRD).
+**Out of scope:** Multi-building deployment, liveness detection, self-enrollment kiosk, QR→face-verify flow (reserved for Phase 5 per Section18 of the PRD).
 
 ## 1.5 Report Organisation
 

@@ -1,9 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
-import { Download, Filter, Phone, Users2, Eye, WifiOff, QrCode } from "lucide-react";
+import { Activity, Download, Filter, QrCode, ShieldAlert, WifiOff } from "lucide-react";
+import { toast } from "sonner";
 import { KpiCard } from "@/components/sp/KpiCard";
 import { StateChip } from "@/components/sp/StateChip";
+import { AbsenteeQR } from "@/components/sp/AbsenteeQR";
+import { API_BASE } from "@/lib/api";
 import {
   deriveRoster,
   fetchActiveSession,
@@ -16,21 +18,21 @@ import type { AttendanceState, RosterEntry } from "@/lib/data/types";
 import { guardRoute } from "@/lib/auth-guard";
 import { ProctorReviewPanel } from "@/components/ProctorReviewPanel";
 import { cn } from "@/lib/utils";
+import { exportSessionPdf } from "@/lib/data/report";
+import { overridePresence } from "@/lib/data/attendance";
+import { fetchZoneAggregates, latestWindow } from "@/lib/data/engagement";
+import type { ZoneAggregateRow } from "@/lib/data/engagement";
+import { VneiPanel } from "@/components/charts/VneiPanel";
 
 export const Route = createFileRoute("/_shell/teacher")({
-  beforeLoad: guardRoute(["teacher", "admin"]),
+  beforeLoad: guardRoute(["teacher"]),
   head: () => ({
     meta: [{ title: "Teacher · SensePro+" }],
   }),
   component: TeacherPage,
 });
 
-const STATE_ORDER: AttendanceState[] = ["PRESENT", "UNVERIFIED", "ABSENT"];
-
-function nextState(s: AttendanceState): AttendanceState {
-  // Bias flow: PRESENT→UNVERIFIED→ABSENT→PRESENT (recovery)
-  return STATE_ORDER[(STATE_ORDER.indexOf(s) + 1) % STATE_ORDER.length];
-}
+const OVERRIDE_STATES: AttendanceState[] = ["PRESENT", "UNVERIFIED", "ABSENT"];
 
 function formatRelative(iso: string | null, nowMs: number): string {
   if (!iso) return "—";
@@ -51,6 +53,9 @@ function TeacherPage() {
   const [pendingFlags, setPendingFlags] = useState(0);
   const [filter, setFilter] = useState<"ALL" | AttendanceState>("ALL");
   const [now, setNow] = useState(() => Date.now());
+  const [exporting, setExporting] = useState(false);
+  const [overriding, setOverriding] = useState<string | null>(null);
+  const [showQr, setShowQr] = useState(false);
 
   const studentsRef = useRef<Awaited<ReturnType<typeof fetchStudents>>>([]);
   const intervalsRef = useRef<Map<string, IntervalRow>>(new Map());
@@ -73,11 +78,16 @@ function TeacherPage() {
     let cancelled = false;
     (async () => {
       try {
-        const [students, active] = await Promise.all([fetchStudents(), fetchActiveSession()]);
+        const active = await fetchActiveSession();
+        if (cancelled) return;
+        const students =
+          active?.mode === "workshop"
+            ? []
+            : await fetchStudents(active?.class_section);
         if (cancelled) return;
         studentsRef.current = students;
         setSession(active);
-        if (active) {
+        if (active?.mode === "lecture") {
           const intervals = await fetchIntervals(active.id);
           if (cancelled) return;
           intervalsRef.current = new Map(intervals.map((iv) => [iv.id, iv]));
@@ -94,7 +104,7 @@ function TeacherPage() {
   }, [rederive]);
 
   useEffect(() => {
-    if (!session) return;
+    if (!session || session.mode !== "lecture") return;
     const unsubscribe = subscribePresence(
       session.id,
       (row) => {
@@ -135,8 +145,76 @@ function TeacherPage() {
 
   const filterCount = (k: "ALL" | AttendanceState) => (k === "ALL" ? total : counts[k]);
 
+  async function handleExport() {
+    if (!session) return;
+    setExporting(true);
+    try {
+      await exportSessionPdf({ section: session.class_section, subject: session.subject, roster });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  async function handleOverride(studentId: string, state: AttendanceState) {
+    if (!session) return;
+    const prevRoster = roster;
+    // Optimistic update, reverted on failure — never claim a state that
+    // wasn't actually persisted.
+    setRoster((r) => r.map((row) => (row.student_id === studentId ? { ...row, state } : row)));
+    setOverriding(studentId);
+    try {
+      // studentId here is the roster's display key (reg_no); resolve back to
+      // the students.id the backend/DB actually keys on.
+      const student = studentsRef.current.find((s) => s.reg_no === studentId);
+      if (!student) throw new Error("Unknown student");
+      await overridePresence(session.id, student.id, state);
+      toast.success(`Marked ${state.toLowerCase()}`);
+    } catch (err) {
+      setRoster(prevRoster);
+      toast.error(err instanceof Error ? err.message : "Override failed — not saved");
+    } finally {
+      setOverriding(null);
+    }
+  }
+
+  if (load === "error") {
+    return (
+      <div className="glass-panel flex flex-col items-center justify-center gap-2 py-16 text-center text-[color:var(--muted)]">
+        <WifiOff className="h-8 w-8 opacity-50" />
+        <div className="font-display text-lg font-medium text-[color:var(--ink)]">
+          Could not load the roster
+        </div>
+        <p className="text-sm">Check your connection and role, then refresh.</p>
+      </div>
+    );
+  }
+
+  if (load === "ready" && session?.mode === "exam") {
+    return (
+      <ExamTeacherView
+        session={session}
+        studentNames={studentNames}
+        pendingFlags={pendingFlags}
+        onPendingCount={setPendingFlags}
+      />
+    );
+  }
+
+  if (load === "ready" && session?.mode === "workshop") {
+    return <WorkshopTeacherView session={session} />;
+  }
+
   return (
     <div className="space-y-8">
+      {load === "ready" && !session && (
+        <div className="rounded-md border border-dashed border-[color:var(--warn)]/50 bg-[color:var(--warn)]/5 px-4 py-3 text-xs text-[color:var(--warn)]">
+          No live session — start one from Capture. The roster below shows every enrolled student as
+          ABSENT until then; nothing here is a real attendance record yet.
+        </div>
+      )}
+
       {/* KPI row */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard
@@ -212,87 +290,130 @@ function TeacherPage() {
               <button className="sp-focus flex h-12 items-center gap-2 rounded-md border border-[color:var(--line)] bg-[color:var(--surface-2)] px-4 text-xs text-[color:var(--muted)] transition-colors hover:text-[color:var(--ink)]">
                 <Filter className="h-3.5 w-3.5" /> Advanced
               </button>
-              <button className="sp-focus flex h-12 items-center gap-2 rounded-md bg-[color:var(--primary)] px-4 text-xs font-semibold text-white transition-colors hover:bg-[color:var(--primary-deep)]">
-                <Download className="h-3.5 w-3.5" /> Export session report (PDF)
+              <button
+                onClick={() => setShowQr(true)}
+                disabled={!session}
+                className="sp-focus flex h-12 items-center gap-2 rounded-md border border-[color:var(--line)] bg-[color:var(--surface-2)] px-4 text-xs text-[color:var(--muted)] transition-colors hover:text-[color:var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <QrCode className="h-3.5 w-3.5" /> Absentee QR
+              </button>
+              <button
+                onClick={() => void handleExport()}
+                disabled={!session || exporting || roster.length === 0}
+                className="sp-focus flex h-12 items-center gap-2 rounded-md bg-[color:var(--primary)] px-4 text-xs font-semibold text-white transition-colors hover:bg-[color:var(--primary-deep)] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Download className="h-3.5 w-3.5" />
+                {exporting ? "Exporting…" : "Export session report (PDF)"}
               </button>
             </div>
           </header>
 
           <div className="max-h-[560px] overflow-y-auto">
-            <table className="w-full border-collapse">
-              <thead className="sticky top-0 bg-[color:var(--surface)] backdrop-blur">
-                <tr className="border-b border-[color:var(--line)]">
-                  {["", "Reg no", "Name", "State", "Last seen"].map((h) => (
-                    <th
-                      key={h}
-                      className="px-4 py-2 text-left font-mono-nums text-[10px] uppercase tracking-[0.16em] text-[color:var(--muted)]"
-                    >
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((r) => {
-                  const flashedAt = flashRef.current.get(r.student_id);
-                  const flashing = !!flashedAt && now - flashedAt < 900;
-                  return (
-                    <tr
-                      key={r.student_id}
-                      className={cn(
-                        "border-b border-[color:var(--line)]/60",
-                        flashing && "row-flash",
-                      )}
-                    >
-                      <td className="w-12 px-4 py-3">
-                        <div className="flex h-9 w-9 items-center justify-center rounded-md border border-[color:var(--line)] font-mono-nums text-[10px] font-semibold text-[color:var(--ink)] bg-[color:var(--surface-2)]">
-                          {r.full_name
-                            .split(" ")
-                            .map((p) => p[0])
-                            .slice(0, 2)
-                            .join("")}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 font-mono-nums text-xs text-[color:var(--muted)]">
-                        {r.student_id}
-                      </td>
-                      <td className="px-4 py-3 text-[15px] text-[color:var(--ink)]">
-                        {r.full_name}
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          <StateChip state={r.state} />
-                          {r.state === "PRESENT" && r.via === "qr" && (
-                            <span
-                              title="Verified via absentee QR selfie"
-                              className="inline-flex items-center gap-1 rounded-full border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/10 px-2 py-0.5 font-mono-nums text-[10px] uppercase tracking-wider text-[color:var(--accent)]"
-                            >
-                              <QrCode className="h-3 w-3" /> QR
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                      <td
-                        className="px-4 py-3 font-mono-nums text-xs text-[color:var(--muted)]"
-                        title={r.last_seen ?? undefined}
+            {load === "loading" ? (
+              <div className="p-10 text-center font-mono-nums text-xs text-[color:var(--muted)]">
+                loading…
+              </div>
+            ) : (
+              <table className="w-full border-collapse">
+                <thead className="sticky top-0 bg-[color:var(--surface)] backdrop-blur">
+                  <tr className="border-b border-[color:var(--line)]">
+                    {["", "Reg no", "Name", "State", "Override", "Last seen"].map((h) => (
+                      <th
+                        key={h}
+                        className="px-4 py-2 text-left font-mono-nums text-[10px] uppercase tracking-[0.16em] text-[color:var(--muted)]"
                       >
-                        {formatRelative(r.last_seen, now)}
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((r) => {
+                    const flashedAt = flashRef.current.get(r.student_id);
+                    const flashing = !!flashedAt && now - flashedAt < 900;
+                    return (
+                      <tr
+                        key={r.student_id}
+                        className={cn(
+                          "border-b border-[color:var(--line)]/60",
+                          flashing && "row-flash",
+                        )}
+                      >
+                        <td className="w-12 px-4 py-3">
+                          <div className="flex h-9 w-9 items-center justify-center rounded-md border border-[color:var(--line)] font-mono-nums text-[10px] font-semibold text-[color:var(--ink)] bg-[color:var(--surface-2)]">
+                            {r.full_name
+                              .split(" ")
+                              .map((p) => p[0])
+                              .slice(0, 2)
+                              .join("")}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 font-mono-nums text-xs text-[color:var(--muted)]">
+                          {r.student_id}
+                        </td>
+                        <td className="px-4 py-3 text-[15px] text-[color:var(--ink)]">
+                          {r.full_name}
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            <StateChip state={r.state} />
+                            {r.state === "PRESENT" && r.via === "qr" && (
+                              <span
+                                title="Verified via absentee QR selfie"
+                                className="inline-flex items-center gap-1 rounded-full border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/10 px-2 py-0.5 font-mono-nums text-[10px] uppercase tracking-wider text-[color:var(--accent)]"
+                              >
+                                <QrCode className="h-3 w-3" /> QR
+                              </span>
+                            )}
+                            {r.via === "override" && (
+                              <span
+                                title="Manually overridden by a teacher"
+                                className="font-mono-nums text-[10px] uppercase tracking-wider text-[color:var(--muted)]"
+                              >
+                                override
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <select
+                            aria-label={`Override ${r.full_name}'s state`}
+                            disabled={!session || overriding === r.student_id}
+                            value={r.state}
+                            onChange={(e) =>
+                              void handleOverride(r.student_id, e.target.value as AttendanceState)
+                            }
+                            className="sp-focus h-9 rounded-md border border-[color:var(--line)] bg-[color:var(--surface-2)] px-2 font-mono-nums text-[11px] text-[color:var(--ink)] outline-none focus:border-[color:var(--primary)] disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {OVERRIDE_STATES.map((s) => (
+                              <option key={s} value={s}>
+                                {s}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td
+                          className="px-4 py-3 font-mono-nums text-xs text-[color:var(--muted)]"
+                          title={r.last_seen ?? undefined}
+                        >
+                          {formatRelative(r.last_seen, now)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {filtered.length === 0 && (
+                    <tr>
+                      <td
+                        colSpan={6}
+                        className="px-4 py-10 text-center font-mono-nums text-xs text-[color:var(--muted)]"
+                      >
+                        No rows match this filter.
                       </td>
                     </tr>
-                  );
-                })}
-                {filtered.length === 0 && (
-                  <tr>
-                    <td
-                      colSpan={5}
-                      className="px-4 py-10 text-center font-mono-nums text-xs text-[color:var(--muted)]"
-                    >
-                      No rows match this filter.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+                  )}
+                </tbody>
+              </table>
+            )}
           </div>
         </section>
 
@@ -305,6 +426,186 @@ function TeacherPage() {
           />
         </section>
       </div>
+
+      {/* Absentee QR fallback — same panel capture.tsx uses, reachable here too
+          so a teacher watching from the dashboard (not standing at the kiosk)
+          can still open a verification window for absent students. */}
+      {showQr && session && (
+        <div className="fixed bottom-6 right-6 z-40 w-75">
+          <AbsenteeQR sessionId={session.id} apiBase={API_BASE} onClose={() => setShowQr(false)} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ExamTeacherView({
+  session,
+  studentNames,
+  pendingFlags,
+  onPendingCount,
+}: {
+  session: ActiveSession;
+  studentNames: Map<string, string>;
+  pendingFlags: number;
+  onPendingCount: (count: number) => void;
+}) {
+  return (
+    <div className="space-y-6">
+      <header className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--warn)]">
+            Examination control
+          </div>
+          <h2 className="mt-1 font-display text-2xl font-extrabold tracking-tight text-[color:var(--ink)]">
+            {session.subject ?? session.class_section}
+          </h2>
+          <p className="mt-1 max-w-2xl text-sm text-[color:var(--muted)]">
+            Review sustained device, additional-person, and off-screen head-pose events. Every item
+            remains a candidate event until a teacher decides.
+          </p>
+        </div>
+        <span className="inline-flex min-h-11 items-center gap-2 rounded-md border border-[color:var(--warn)]/40 bg-[color:var(--warn)]/10 px-3 font-mono-nums text-[11px] uppercase tracking-wider text-[color:var(--warn)]">
+          <ShieldAlert className="h-4 w-4" /> live proctoring
+        </span>
+      </header>
+
+      <div className="grid gap-4 sm:grid-cols-3">
+        <KpiCard
+          label="Awaiting review"
+          value={pendingFlags}
+          accent={pendingFlags > 0 ? "warn" : "ok"}
+          hint="Human decision required"
+        />
+        <KpiCard
+          label="Candidate roster"
+          value={studentNames.size}
+          accent="primary"
+          hint="Exam cohort"
+        />
+        <KpiCard label="Review policy" value="Human" accent="muted" hint="No automatic verdicts" />
+      </div>
+
+      <ProctorReviewPanel
+        sessionId={session.id}
+        studentNames={studentNames}
+        onPendingCount={onPendingCount}
+      />
+    </div>
+  );
+}
+
+function WorkshopTeacherView({ session }: { session: ActiveSession }) {
+  const [rows, setRows] = useState<ZoneAggregateRow[]>([]);
+  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const next = await fetchZoneAggregates(session.id);
+        if (!cancelled) {
+          setRows(next);
+          setState("ready");
+        }
+      } catch {
+        if (!cancelled) setState("error");
+      }
+    };
+    void refresh();
+    const interval = window.setInterval(() => void refresh(), 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [session.id]);
+
+  const latest = useMemo(() => latestWindow(rows), [rows]);
+  const zoneRows = [...latest.byZone.values()].filter((row) => row.zone !== "class");
+  const classRow = latest.byZone.get("class");
+  const tracked = zoneRows.reduce((sum, row) => sum + row.n_tracked, 0);
+  const enrolled = zoneRows.reduce((sum, row) => sum + row.enrolled_in_zone, 0);
+  const meanVnei = classRow
+    ? classRow.vnei
+    : tracked > 0
+      ? zoneRows.reduce((sum, row) => sum + row.vnei * row.n_tracked, 0) / tracked
+      : null;
+  const meanCoverage = classRow
+    ? classRow.coverage
+    : enrolled > 0
+      ? zoneRows.reduce((sum, row) => sum + row.coverage * row.enrolled_in_zone, 0) /
+        enrolled
+      : null;
+
+  return (
+    <div className="space-y-6">
+      <header className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--accent)]">
+            Workshop engagement
+          </div>
+          <h2 className="mt-1 font-display text-2xl font-extrabold tracking-tight text-[color:var(--ink)]">
+            {session.subject ?? session.class_section}
+          </h2>
+          <p className="mt-1 max-w-2xl text-sm text-[color:var(--muted)]">
+            Anonymous zone-level posture, activity, and device signals. This view contains no
+            participant identities or individual outcomes.
+          </p>
+        </div>
+        <span className="inline-flex min-h-11 items-center gap-2 rounded-md border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/10 px-3 font-mono-nums text-[11px] uppercase tracking-wider text-[color:var(--accent)]">
+          <Activity className="h-4 w-4" /> aggregate stream
+        </span>
+      </header>
+
+      <div className="grid gap-4 sm:grid-cols-3">
+        <KpiCard
+          label={classRow ? "Class signal" : "Weighted zone signal"}
+          value={meanVnei === null ? "Withheld" : Math.round(meanVnei * 100)}
+          suffix={meanVnei === null ? undefined : "%"}
+          accent={meanVnei === null ? "muted" : "accent"}
+          hint={
+            meanVnei === null
+              ? "Waiting for reportable window"
+              : classRow
+                ? "Latest reportable window"
+                : "Peak-visible weighted · latest window"
+          }
+        />
+        <KpiCard
+          label="Camera coverage"
+          value={meanCoverage === null ? "—" : Math.round(meanCoverage * 100)}
+          suffix={meanCoverage === null ? undefined : "%"}
+          accent="primary"
+          hint="Peak visible ÷ configured zone roster"
+        />
+        <KpiCard
+          label="Aggregate windows"
+          value={new Set(rows.map((row) => row.window_start)).size}
+          accent="ok"
+          hint="Persisted class aggregates"
+        />
+      </div>
+
+      <section className="glass-panel p-5 sm:p-6">
+        {state === "loading" ? (
+          <div className="grid min-h-52 place-items-center font-mono-nums text-xs text-[color:var(--muted)]">
+            Loading workshop windows…
+          </div>
+        ) : state === "error" ? (
+          <div className="flex min-h-52 flex-col items-center justify-center gap-2 text-center text-[color:var(--muted)]">
+            <WifiOff className="h-8 w-8 opacity-50" />
+            <p>Workshop aggregates could not be refreshed.</p>
+          </div>
+        ) : (
+          <VneiPanel rows={rows} />
+        )}
+      </section>
+
+      <p className="rounded-md border border-[color:var(--line)] bg-[color:var(--surface-2)] px-4 py-3 font-mono-nums text-[11px] leading-relaxed text-[color:var(--muted)]">
+        A zone is reported only when at least five faces are simultaneously visible and
+        pose-observable. Zone-level summaries are weighted by peak visible count; missing data is
+        shown as withheld, never as zero engagement.
+      </p>
     </div>
   );
 }

@@ -71,6 +71,13 @@ def pose_bin(det: Detection, frame_w: int) -> str:
     return "center"
 
 
+# Fraction of the face box added as context on each side before degrading, so
+# the re-detection inside _detect_embed can still find the face. 0.6 was the
+# smallest margin that recovered detection at both 96px and 64px on the real
+# DSLR enrolment photos.
+_DEGRADE_CONTEXT = 0.6
+
+
 def degrade_crop(
     crop: np.ndarray,
     target_h: int,
@@ -189,11 +196,32 @@ class Enroller:
                 if not self.degrade:
                     continue
                 x1, y1, x2, y2 = det.box
-                crop = fr[max(0, y1) : max(1, y2), max(0, x1) : max(1, x2)]
+                # Degrade a crop that KEEPS CONTEXT around the face, not the bare
+                # detector box. _detect_embed re-detects before embedding, and
+                # SCRFD needs margin: on a tight box downscaled to 64-96px and
+                # re-encoded, detection fails outright, every variant was dropped
+                # at the `emb is None` guard below, and degrade-augmentation
+                # silently produced ZERO extra templates while reporting success.
+                # Measured on the real DSLR set: tight crop -> 0 faces found for
+                # both 96px and 64px; the same crop with 60% margin -> 1 face for
+                # both. That is why the live gallery has exactly one template per
+                # photo despite degrade defaulting to on.
+                fh, fw = fr.shape[:2]
+                bw, bh = x2 - x1, y2 - y1
+                if bw <= 0 or bh <= 0:
+                    continue
+                mx, my = int(bw * _DEGRADE_CONTEXT), int(bh * _DEGRADE_CONTEXT)
+                crop = fr[
+                    max(0, y1 - my) : min(fh, y2 + my),
+                    max(0, x1 - mx) : min(fw, x2 + mx),
+                ]
                 if crop.size == 0:
                     continue
                 for h in self.degrade_heights:
-                    variant = degrade_crop(crop, h, self.jpeg_quality, self.blur_sigma)
+                    # degrade_heights are FACE heights, but `crop` now includes
+                    # margin — scale the target so the face itself lands at h.
+                    target = int(round(h * crop.shape[0] / bh))
+                    variant = degrade_crop(crop, target, self.jpeg_quality, self.blur_sigma)
                     if variant is None:
                         continue
                     emb = self._detect_embed(variant)

@@ -9,9 +9,18 @@ import {
 } from "@tanstack/react-router";
 import { useEffect, type ReactNode } from "react";
 import { Toaster } from "sonner";
-import { ThemeProvider } from "@/lib/theme";
+import { ThemeProvider, useTheme } from "@/lib/theme";
+import { ClerkProvider } from "@clerk/clerk-react";
+import { dark } from "@clerk/themes";
 
 import appCss from "../styles.css?url";
+
+const CLERK_PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+if (!CLERK_PUBLISHABLE_KEY) {
+  throw new Error(
+    "Missing VITE_CLERK_PUBLISHABLE_KEY — add it to apps/web/.env.local. Get it from https://dashboard.clerk.com → API Keys.",
+  );
+}
 
 function NotFoundComponent() {
   return (
@@ -136,25 +145,63 @@ function RootShell({ children }: { children: ReactNode }) {
   );
 }
 
+function ThemedClerkProvider({ children }: { children: ReactNode }) {
+  const { theme } = useTheme();
+  const isDark = theme === "dark";
+
+  return (
+    <ClerkProvider
+      publishableKey={CLERK_PUBLISHABLE_KEY}
+      signInUrl="/login"
+      signUpUrl="/login"
+      signInFallbackRedirectUrl="/teacher"
+      signUpFallbackRedirectUrl="/teacher"
+      afterSignOutUrl="/login"
+      appearance={{
+        baseTheme: isDark ? dark : undefined,
+        variables: {
+          colorPrimary: isDark ? "#F59E0B" : "#D97706",
+          colorBackground: isDark ? "#0E0E14" : "#FFFFFF",
+          colorInputBackground: isDark ? "rgba(255, 255, 255, 0.05)" : "#F4F1EA",
+          colorInputText: isDark ? "#FAFAFA" : "#0F172A",
+          colorText: isDark ? "#FAFAFA" : "#0F172A",
+          colorTextSecondary: isDark ? "#A1A1AA" : "#64748B",
+          borderRadius: "0.75rem",
+        },
+        elements: {
+          card: "border border-[color:var(--line)] shadow-2xl backdrop-blur-xl",
+          formButtonPrimary:
+            "bg-[color:var(--primary)] hover:bg-[color:var(--primary-deep)] text-white font-semibold",
+          footerActionLink: "text-[color:var(--primary)] hover:underline",
+        },
+      }}
+    >
+      {children}
+    </ClerkProvider>
+  );
+}
+
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
 
   return (
     <ThemeProvider>
-      <QueryClientProvider client={queryClient}>
-        <Outlet />
-        <Toaster
-          position="bottom-right"
-          toastOptions={{
-            style: {
-              background: "var(--surface-2)",
-              border: "1px solid var(--line)",
-              color: "var(--ink)",
-              fontFamily: "var(--font-sans)",
-            },
-          }}
-        />
-      </QueryClientProvider>
+      <ThemedClerkProvider>
+        <QueryClientProvider client={queryClient}>
+          <Outlet />
+          <Toaster
+            position="bottom-right"
+            toastOptions={{
+              style: {
+                background: "var(--surface-2)",
+                border: "1px solid var(--line)",
+                color: "var(--ink)",
+                fontFamily: "var(--font-sans)",
+              },
+            }}
+          />
+        </QueryClientProvider>
+      </ThemedClerkProvider>
     </ThemeProvider>
   );
 }

@@ -20,3 +20,48 @@ export function claimBase(): string {
     import.meta.env.VITE_CLAIM_BASE || (typeof window !== "undefined" ? window.location.origin : "")
   );
 }
+
+interface ClerkWindow {
+  Clerk?: {
+    loaded?: boolean;
+    session?: {
+      getToken: () => Promise<string | null>;
+    };
+  };
+}
+
+/** Resolves active auth token from Clerk session (or Supabase fallback). */
+export async function getAuthToken(): Promise<string | null> {
+  if (typeof window !== "undefined") {
+    let clerk = (window as unknown as ClerkWindow).Clerk;
+    if (!clerk?.loaded) {
+      for (let i = 0; i < 25; i++) {
+        await new Promise((r) => setTimeout(r, 40));
+        clerk = (window as unknown as ClerkWindow).Clerk;
+        if (clerk?.loaded) break;
+      }
+    }
+    if (clerk?.session) {
+      try {
+        const token = await clerk.session.getToken();
+        if (token) return token;
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  try {
+    const { supabaseAuth } = await import("@/lib/supabase");
+    const { data } = await supabaseAuth.auth.getSession();
+    return data.session?.access_token ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Resolves authorization headers with Bearer token. */
+export async function authHeader(): Promise<Record<string, string>> {
+  const token = await getAuthToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}

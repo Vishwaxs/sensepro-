@@ -10,9 +10,13 @@ export default defineConfig({
     tailwindcss(),
     tanstackStart({
       server: { entry: "server" },
+      spa: { enabled: true },
     }),
     react(),
   ],
+  optimizeDeps: {
+    include: ["jspdf", "jspdf-autotable"],
+  },
   server: {
     host: true,
     strictPort: false,

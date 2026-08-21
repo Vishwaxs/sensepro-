@@ -13,7 +13,7 @@ import {
   X,
 } from "lucide-react";
 import { guardRoute } from "@/lib/auth-guard";
-import { supabase } from "@/lib/supabase/client";
+import { supabase, supabaseAuth } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
 import { API_BASE } from "@/lib/api";
 
@@ -44,6 +44,22 @@ interface EmbStat {
   video_knee: number;
   video_waist: number;
   total: number;
+}
+
+/** One row of the enrollment_coverage view (migrations 0017/0018): the roster joined
+ *  to per-student template counts by provenance. `video` counts templates
+ *  written before the `source` column existed (NULL source). Never carries a
+ *  vector — see the view's comment. */
+interface CoverageRow {
+  student_id: string;
+  reg_no: string;
+  full_name: string;
+  class_section: string | null;
+  total: number;
+  photo: number;
+  video_knee: number;
+  video_waist: number;
+  video: number;
 }
 
 interface EnrollResult {
@@ -117,40 +133,47 @@ function EnrollmentPage() {
     setLoading(true);
     setLoadError(null);
     try {
-      // Page through embeddings in 1000-row chunks. PostgREST returns at most
-      // the server-side row limit (default 1000) per request, so a single
-      // .select() silently undercounts once a class exceeds that threshold.
-      const PAGE_SIZE = 1000;
-      const allEmb: { student_id: string; source: string | null }[] = [];
-      let offset = 0;
-      while (true) {
-        const { data: page, error: pageErr } = await supabase
-          .from("embeddings")
-          .select("student_id, source")
-          .range(offset, offset + PAGE_SIZE - 1);
-        if (pageErr) throw pageErr;
-        const rows = (page ?? []) as { student_id: string; source: string | null }[];
-        allEmb.push(...rows);
-        if (rows.length < PAGE_SIZE) break;
-        offset += PAGE_SIZE;
-      }
-
-      const studRes = await supabase
-        .from("students")
-        .select("id, reg_no, full_name, class_section")
+      // Roster + per-student template counts in ONE read, from the
+      // enrollment_coverage view (migrations 0017/0018). This page used to page
+      // through `embeddings` directly, but that table is deliberately never
+      // granted to `authenticated` — it holds the raw vector(512) face
+      // templates, which must not reach a browser. The read was denied, and
+      // because it ran first the page never reached its students query either,
+      // so the whole station showed "Could not load the roster" with 0 on every
+      // tile. The view exposes counts by provenance and nothing else: no
+      // vector, no quality, no per-embedding row. It also aggregates
+      // server-side, so the old 1000-row pagination loop is gone — one row per
+      // student regardless of how many templates each has.
+      const { data, error } = await supabase
+        .from("enrollment_coverage")
+        .select(
+          "student_id, reg_no, full_name, class_section, total, photo, video_knee, video_waist, video",
+        )
         .order("reg_no");
-      if (studRes.error) throw studRes.error;
+      if (error) throw error;
 
+      const rows = (data ?? []) as CoverageRow[];
       const agg: Record<string, EmbStat> = {};
-      for (const row of allEmb) {
-        const st = (agg[row.student_id] ??= { ...EMPTY_STAT });
-        st.total += 1;
-        if (row.source === "photo") st.photo += 1;
-        else if (row.source === "video_knee") st.video_knee += 1;
-        else if (row.source === "video_waist") st.video_waist += 1;
-        else if (row.source === "video") st.video += 1;
+      for (const r of rows) {
+        agg[r.student_id] = {
+          total: r.total,
+          photo: r.photo,
+          video_knee: r.video_knee,
+          video_waist: r.video_waist,
+          // Templates predating the `source` column (NULL). The old code
+          // counted source === "video", a value the CHECK constraint never
+          // permits, so legacy templates were silently dropped from the total.
+          video: r.video,
+        };
       }
-      setStudents((studRes.data as StudentRow[]) ?? []);
+      setStudents(
+        rows.map((r) => ({
+          id: r.student_id,
+          reg_no: r.reg_no,
+          full_name: r.full_name,
+          class_section: r.class_section,
+        })),
+      );
       setStats(agg);
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : "Could not load the roster.");
@@ -188,7 +211,7 @@ function EnrollmentPage() {
     <div className="space-y-6">
       <header>
         <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--muted)]">
-          § enrollment station
+          Section enrollment station
         </div>
         <h2 className="mt-1 font-display text-2xl font-extrabold tracking-tight text-[color:var(--ink)]">
           Enrollment dashboard
@@ -500,7 +523,7 @@ function FramingSlot({
     try {
       const {
         data: { session },
-      } = await supabase.auth.getSession();
+      } = await supabaseAuth.auth.getSession();
       if (!session) throw new Error("Not authenticated");
 
       const form = new FormData();

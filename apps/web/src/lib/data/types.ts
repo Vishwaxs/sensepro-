@@ -21,7 +21,7 @@ export interface RosterEntry {
   state: AttendanceState;
   last_seen: string | null; // ISO timestamp of last state change
   present_seconds: number; // total PRESENT duration this session
-  via?: "camera" | "qr" | null; // how the latest PRESENT was marked
+  via?: "camera" | "qr" | "override" | null; // how the latest state was set
 }
 
 export interface Session {
@@ -96,3 +96,27 @@ export interface AttendanceRecord {
   date: string;
   state: AttendanceState;
 }
+
+export interface DeletionRequestRow {
+  id: string;
+  student_id: string;
+  name: string;
+  reg_no: string;
+  requested_at: string;
+  status: "pending" | "approved" | "denied";
+}
+
+export interface RoleRequestRow {
+  id: string;
+  user_id: string;
+  email: string;
+  full_name: string | null;
+  requested_role: "teacher" | "management" | "admin" | "student";
+  reason: string | null;
+  status: "pending" | "approved" | "rejected";
+  created_at: string;
+  resolved_at: string | null;
+  resolved_by: string | null;
+  resolved_role: string | null;
+}
+

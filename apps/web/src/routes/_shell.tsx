@@ -12,6 +12,7 @@ const TITLES: Record<string, string> = {
   "/proctor": "Proctor · Review Queue",
   "/trends": "Management · Aggregate Trends",
   "/sessions": "Teacher · Session History",
+  "/start": "Start · New Session",
 };
 
 export const Route = createFileRoute("/_shell")({

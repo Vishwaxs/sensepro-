@@ -18,19 +18,18 @@ Auth:
 
 from __future__ import annotations
 
-import base64
-import json
 import logging
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 
 import cv2
-import httpx
 import numpy as np
+from fastapi.concurrency import run_in_threadpool
 from fastapi import APIRouter, File, Form, Header, HTTPException, UploadFile
 from pydantic import BaseModel
 
+from app import auth as app_auth
 from app.config import settings
 from app.store import SupabaseNotConfigured, require_supabase_writer
 from vision.embedding_store import EmbeddingStore
@@ -40,83 +39,47 @@ router = APIRouter(prefix="/v1/qr", tags=["qr"])
 
 QR_TOKEN_TTL_S = 75  # tokens rotate before this; single-use regardless
 QR_WINDOW_TTL_S = 30  # seconds to reach the camera after a claim
-CLAIM_RATE_MAX = 6  # claims per user per window (in-memory, per-process)
+CLAIM_RATE_MAX = 6  # token claims per user per window (in-memory, per-process)
 CLAIM_RATE_WINDOW_S = 60
+# Selfie retries get their OWN, larger budget. Claim and verify used to share
+# one 6-per-minute counter, so a student who claimed a token (1) and then retook
+# their selfie a few times — the normal outcome in poor light — hit 429 and was
+# locked out for a minute, inside a 30-second verification window. Retrying is
+# the student cooperating, not abusing: it costs one face match and can only
+# ever satisfy a window they already hold.
+VERIFY_RATE_MAX = 20
+VERIFY_RATE_WINDOW_S = 60
 MAX_SELFIE_BYTES = 4 * 1024 * 1024  # one downscaled still frame — not a video
 
 _claim_hits: dict[str, deque] = defaultdict(deque)
 _prober = None  # lazily-built enrolment embedder, reused across verify calls
 
 
-def _decode_claims(authorization: str | None) -> dict:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(401, "Missing or invalid Authorization header")
-    token = authorization[7:]
-    try:
-        payload = token.split(".")[1]
-        padded = payload + "=" * ((4 - len(payload) % 4) % 4)
-        return json.loads(base64.urlsafe_b64decode(padded))
-    except Exception:
-        raise HTTPException(401, "Invalid JWT")
-
-
 def _require_role(authorization: str | None, allowed: set[str]) -> dict:
-    """Authorise a staff caller.
-
-    Fast path: trust the app_role the Access Token Hook injected into the JWT.
-    Fallback: if the JWT carries NO app_role (the hook is disabled, or the token
-    was minted before the user's role existed), verify the token for real via
-    GoTrue and read the role straight from user_roles — the DB source of truth.
-    This keeps staff endpoints working regardless of whether the hook is enabled,
-    without ever trusting a client-supplied role (a present-but-wrong role in the
-    JWT is still rejected, and the fallback is gated on a real token verify)."""
-    claims = _decode_claims(authorization)
-    role = claims.get("app_role")
-    if role is not None:
-        if role not in allowed:
-            raise HTTPException(403, f"Requires one of {sorted(allowed)}")
-        return claims
-    uid = _verify_user(authorization)
-    writer = _writer()
-    try:
-        db_role = writer.role_for_auth_uid(uid)
-    finally:
-        writer.close()
-    if db_role not in allowed:
-        raise HTTPException(403, f"Requires one of {sorted(allowed)}")
-    claims["app_role"] = db_role
-    return claims
+    """Verify the caller and assert their role — signature checked by Supabase."""
+    return app_auth.require_role(authorization, allowed)
 
 
 def _verify_user(authorization: str | None) -> str:
-    """Verify the caller's Supabase session FOR REAL (GoTrue validates the
-    signature/expiry) and return their auth user id."""
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(401, "Missing or invalid Authorization header")
-    token = authorization[7:]
-    try:
-        r = httpx.get(
-            f"{settings.supabase_url.rstrip('/')}/auth/v1/user",
-            headers={"Authorization": f"Bearer {token}", "apikey": settings.supabase_auth_key},
-            timeout=10,
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(503, f"Auth verification unavailable: {exc}")
-    if r.status_code != 200:
-        raise HTTPException(401, "Invalid or expired session")
-    uid = r.json().get("id")
-    if not uid:
-        raise HTTPException(401, "Invalid session")
-    return uid
+    """Verified auth uid. Delegates to app.auth (see that module on why nothing
+    here may read a role out of an unverified token)."""
+    return app_auth.verified_uid(authorization)
 
 
-def _rate_limit(key: str) -> None:
+def _rate_limit(
+    key: str,
+    *,
+    bucket: str = "claim",
+    limit: int = CLAIM_RATE_MAX,
+    window_s: int = CLAIM_RATE_WINDOW_S,
+    message: str = "Too many attempts — wait a moment and rescan.",
+) -> None:
     now = time.monotonic()
-    hits = _claim_hits[key]
-    while hits and now - hits[0] > CLAIM_RATE_WINDOW_S:
+    hits = _claim_hits[f"{bucket}:{key}"]
+    while hits and now - hits[0] > window_s:
         hits.popleft()
-    if len(hits) >= CLAIM_RATE_MAX:
-        raise HTTPException(429, "Too many attempts — wait a moment and rescan.")
+    if len(hits) >= limit:
+        raise HTTPException(429, message)
     hits.append(now)
 
 
@@ -130,6 +93,12 @@ def _writer():
 def _parse_ts(value: str) -> datetime:
     """Parse a PostgREST timestamp (accepts a trailing 'Z') as tz-aware UTC."""
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _require_qr_mode(session: dict) -> None:
+    """QR is an attendance fallback, never an exam/workshop mechanism."""
+    if session.get("mode") != "lecture":
+        raise HTTPException(409, "QR check-in is available only for attendance sessions.")
 
 
 def _embed_probe(img: np.ndarray) -> list[float] | None:
@@ -160,8 +129,13 @@ def issue_token(body: SessionBody, authorization: str | None = Header(None)) -> 
     _require_role(authorization, {"teacher", "admin"})
     writer = _writer()
     try:
-        if writer.active_session(body.session_id) is None:
+        setting = writer.get_setting("qr_checkin_enabled")
+        if setting is not None and setting["value"] is False:
+            raise HTTPException(403, "QR check-in is currently disabled by admin.")
+        session = writer.active_session(body.session_id)
+        if session is None:
             raise HTTPException(409, "Session is not active")
+        _require_qr_mode(session)
         tok = writer.issue_qr_token(body.session_id, QR_TOKEN_TTL_S)
         writer.append_audit("api:teacher", "qr_window_open", {"session_id": body.session_id})
         return {**tok, "ttl_s": QR_TOKEN_TTL_S}
@@ -200,6 +174,7 @@ def claim(body: ClaimBody, authorization: str | None = Header(None)) -> dict:
         session = writer.active_session(tok["session_id"])
         if session is None:
             raise HTTPException(409, "That session is not active.")
+        _require_qr_mode(session)
         if student["class_section"] != session["class_section"]:
             raise HTTPException(403, "You are not enrolled in this class.")
         if writer.has_open_present(session["id"], student["id"]):
@@ -245,8 +220,27 @@ async def verify(
     existing path and close the window. This is the corner-seat path — no walk to
     the classroom camera, one small still upload (works on weak phone internet).
     The selfie is decoded in memory and discarded; nothing touches disk."""
+    data = await selfie.read()
+    # Everything below is blocking: a GoTrue round-trip, several PostgREST
+    # calls, a JPEG decode and an ArcFace forward pass. Running it inline in an
+    # `async def` pins the event loop for the whole request, which stalls EVERY
+    # other connection on the process — including the classroom capture
+    # WebSocket that is meanwhile streaming frames. One student's selfie must
+    # not freeze the room's attendance. FastAPI would have run this in a
+    # threadpool automatically had it been a plain `def`; it is async only to
+    # await the upload, so read the upload here and hand the rest to a worker.
+    return await run_in_threadpool(_verify_sync, window_id, data, authorization)
+
+
+def _verify_sync(window_id: str, data: bytes, authorization: str | None) -> dict:
     auth_uid = _verify_user(authorization)
-    _rate_limit(auth_uid)
+    _rate_limit(
+        auth_uid,
+        bucket="verify",
+        limit=VERIFY_RATE_MAX,
+        window_s=VERIFY_RATE_WINDOW_S,
+        message="Too many selfie attempts — wait a moment, then try again.",
+    )
     writer = _writer()
     try:
         student = writer.student_by_auth_uid(auth_uid)
@@ -262,10 +256,11 @@ async def verify(
             raise HTTPException(409, "You are already verified for this window.")
         if _parse_ts(win["expires_at"]) <= datetime.now(timezone.utc):
             raise HTTPException(410, "This window has expired — ask for a new code.")
-        if writer.active_session(win["session_id"]) is None:
+        session = writer.active_session(win["session_id"])
+        if session is None:
             raise HTTPException(409, "That session has ended.")
+        _require_qr_mode(session)
 
-        data = await selfie.read()
         if len(data) > MAX_SELFIE_BYTES:
             raise HTTPException(
                 400, f"Image too large: {len(data)} bytes (max {MAX_SELFIE_BYTES})."

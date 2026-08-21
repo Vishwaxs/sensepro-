@@ -23,7 +23,7 @@ function ShimmerButtonRaw({
 }: ShimmerButtonProps) {
   return (
     <button
-      className={`group relative inline-flex items-center justify-center overflow-hidden rounded-xl px-6 py-3 font-bold text-[#07070A] transition-all duration-300 hover:scale-[1.02] hover:shadow-[0_0_24px_rgba(245,158,11,0.35)] active:scale-[0.98] disabled:opacity-60 disabled:pointer-events-none ${className}`}
+      className={`group relative inline-flex items-center justify-center overflow-hidden rounded-xl px-6 py-3 font-bold text-white shadow-md transition-all duration-300 hover:scale-[1.02] hover:shadow-[0_0_24px_rgba(217,119,6,0.35)] active:scale-[0.98] disabled:opacity-60 disabled:pointer-events-none ${className}`}
       style={{ background: `linear-gradient(135deg, ${fromColor}, ${toColor})` }}
       {...props}
     >

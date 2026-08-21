@@ -8,6 +8,10 @@ class Settings(BaseSettings):
     # recognition (new faces get named within a couple of seconds). Now that
     # inference runs off the event loop this is cheap to keep responsive.
     reid_interval_s: float = 2.0
+    # Max faces embedded per frame. ArcFace is ~134 ms/face on CPU, so an
+    # unbounded pass over a 25-track classroom blocks ~3.4 s and backs up the
+    # capture socket. See SessionPipeline.max_reid_per_frame.
+    max_reid_per_frame: int = 5
     miss_threshold: int = 3
     cosine_threshold: float = 0.45
     enrollment_json: str = "enrollments.json"  # dev: load roster from file
@@ -20,7 +24,17 @@ class Settings(BaseSettings):
     # changes nothing; both must be raised together. capture_send_width and
     # capture_fps are the recommended defaults the frontend reads at startup.
     det_size: int = 640
-    capture_send_width: int = 1280
+    # SCRFD detector confidence floor. Lower recovers more partial/back-row
+    # faces at the cost of more false detections; cosine_threshold still gates
+    # identity, so a spurious low-confidence detection rarely becomes a wrong
+    # match. Unset uses InsightFace's own default (0.5).
+    det_thresh: float = 0.5
+    # Measured on the real 4K classroom set (44 frames, 53-student gallery):
+    # 1280 -> median face 23 px, 13/25 faces under 24 px, 31% matched.
+    # 1920 -> median face 35 px, 1/25 under 24 px, 38.5% matched, for only
+    # +114 ms detection per frame. Raising this WITHOUT raising det_size still
+    # helps, because SCRFD's internal resize preserves more of a bigger face.
+    capture_send_width: int = 1920
     capture_fps: float = 1.0
     # Minimum face pixel height to consider for matching. 0 = no filter
     # (all detected faces are matched). Raise to skip micro-detections.
@@ -29,6 +43,15 @@ class Settings(BaseSettings):
     # Cumulative attendance: a student is ATTENDED for the session once they
     # have >= this many confident sightings. ATTENDED never flips back.
     attendance_sighting_threshold: int = 3
+
+    # Clerk Auth configuration
+    clerk_secret_key: str = ""
+    clerk_publishable_key: str = ""
+    clerk_jwks_url: str = "https://funny-teal-523.clerk.accounts.dev/.well-known/jwks.json"
+    # Resend Email Notification System
+    resend_api_key: str = ""
+    resend_from_email: str = "SensePro+ <onboarding@resend.dev>"
+    admin_notify_email: str = ""
 
     # Supabase write-path (Phase 2). Server-side only; the frontend reads Postgres
     # directly via RLS/Realtime. Leave supabase_url blank to run fully offline

@@ -24,11 +24,32 @@ export interface ProctorFlagRow {
 const COLUMNS =
   "id, session_id, student_id, flag_type, suppressed, flagged_at, review_status, reviewed_by, reviewed_at";
 
+export interface ExamSessionRow {
+  id: string;
+  class_section: string;
+  subject: string | null;
+  mode: "exam";
+  starts_at: string;
+  ends_at: string | null;
+}
+
+export async function fetchExamSessions(limit = 20): Promise<ExamSessionRow[]> {
+  const { data, error } = await supabase
+    .from("class_sessions")
+    .select("id, class_section, subject, mode, starts_at, ends_at")
+    .eq("mode", "exam")
+    .order("starts_at", { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data ?? []) as ExamSessionRow[];
+}
+
 export async function fetchFlags(sessionId: string): Promise<ProctorFlagRow[]> {
   const { data, error } = await supabase
     .from("proctor_flags")
     .select(COLUMNS)
     .eq("session_id", sessionId)
+    .eq("suppressed", false)
     .order("flagged_at", { ascending: false });
   if (error) throw error;
   return data ?? [];
@@ -39,17 +60,17 @@ export async function fetchFlags(sessionId: string): Promise<ProctorFlagRow[]> {
 export async function reviewFlag(
   id: string,
   status: Exclude<ReviewStatus, "pending">,
-  reviewerId: string,
 ): Promise<void> {
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("proctor_flags")
-    .update({
-      review_status: status,
-      reviewed_by: reviewerId,
-      reviewed_at: new Date().toISOString(),
-    })
-    .eq("id", id);
+    .update({ review_status: status })
+    .eq("id", id)
+    .eq("review_status", "pending")
+    .eq("suppressed", false)
+    .select("id")
+    .maybeSingle();
   if (error) throw error;
+  if (!data) throw new Error("This event was already reviewed or is no longer available.");
 }
 
 /** Live queue for one session; returns an unsubscribe fn (same pattern as
@@ -71,7 +92,7 @@ export function subscribeFlags(
       },
       (payload) => {
         const row = payload.new as ProctorFlagRow;
-        if (row?.id) onChange(row); // DELETE events carry an empty payload.new
+        if (row?.id && !row.suppressed) onChange(row); // DELETE events carry an empty payload.new
       },
     )
     .subscribe((status) => onStatus?.(status === "SUBSCRIBED"));

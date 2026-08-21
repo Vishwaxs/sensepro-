@@ -22,8 +22,8 @@ function Badge({ tone, children }: { tone: "warn" | "muted" | "ok"; children: Re
 
 /** Live VNEI by zone with the honesty devices attached: every bar carries a
  *  coverage badge, coverage under 50% renders hatched LOW-CONFIDENCE, and a
- *  zone with no row in the window shows "suppressed (k<5)" — absence is the
- *  k-anonymity floor working, never a zero. Trend renders as one sparkline
+ *  zone with no row is shown as withheld because absence alone cannot identify
+ *  which observability or persistence gate applied. Trend renders as one sparkline
  *  per zone (small multiples), so meaning never rides on series color. */
 
 const ZONES: Array<"front" | "mid" | "back"> = ["front", "mid", "back"];
@@ -40,10 +40,10 @@ function ZoneBar({ row }: { row: ZoneAggregateRow | undefined }) {
         className="grid h-9 place-items-center rounded-lg bg-surface-2"
         style={HATCH}
         role="img"
-        aria-label="suppressed: fewer than 5 tracked faces"
+        aria-label="withheld: no reportable aggregate for this zone"
       >
         <span className="font-mono text-[10.5px] tracking-wider text-muted uppercase">
-          suppressed (k&lt;5)
+          withheld · no reportable row
         </span>
       </div>
     );

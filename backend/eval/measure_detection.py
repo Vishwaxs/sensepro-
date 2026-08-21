@@ -35,9 +35,7 @@ def _resize(img: np.ndarray, target_w: int) -> np.ndarray:
     return cv2.resize(img, (target_w, target_h), interpolation=cv2.INTER_AREA)
 
 
-def _measure_one(
-    img: np.ndarray, det_size: int
-) -> tuple[int, float, float]:
+def _measure_one(img: np.ndarray, det_size: int) -> tuple[int, float, float]:
     """Returns (n_faces, mean_face_px_height, inference_ms)."""
     from insightface.app import FaceAnalysis
 
@@ -111,9 +109,7 @@ def main(argv: list[str] | None = None) -> None:
                 "inference_ms": round(ms, 1),
             }
             rows.append(row)
-            print(
-                f"{sw:>8} {ds:>8} {n_faces:>6} {mean_h:>10.1f} {ms:>8.1f}"
-            )
+            print(f"{sw:>8} {ds:>8} {n_faces:>6} {mean_h:>10.1f} {ms:>8.1f}")
 
     csv_path = img_path.with_suffix(".detection_grid.csv")
     with open(csv_path, "w", newline="") as f:

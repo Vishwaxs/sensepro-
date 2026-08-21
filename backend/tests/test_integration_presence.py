@@ -6,6 +6,7 @@ PRESENT opens, then closes when the student disappears, ABSENT opens, and
 session end closes whatever is still open.
 """
 
+from tests.conftest import STAFF_WS_TOKEN
 import base64
 
 import cv2
@@ -70,7 +71,9 @@ def test_ws_session_emits_correct_upsert_sequence(monkeypatch) -> None:
     monkeypatch.setattr("app.config.settings.miss_threshold", 1)
 
     client = TestClient(app)
-    with client.websocket_connect("/ws/capture?session_id=sess-test") as sock:
+    with client.websocket_connect(
+        f"/ws/capture?session_id=sess-test&token={STAFF_WS_TOKEN}"
+    ) as sock:
         # t=0: marker visible -> s1 PRESENT
         sock.send_json({"type": "frame", "ts": 0.0, "jpg_b64": _jpg_b64(_marker_frame())})
         r1 = sock.receive_json()
@@ -95,11 +98,13 @@ def test_ws_session_emits_correct_upsert_sequence(monkeypatch) -> None:
 def test_ws_without_session_id_never_touches_writer(monkeypatch) -> None:
     fake = FakeWriter()
     monkeypatch.setattr(ws_mod, "build_writer", lambda: fake)
-    monkeypatch.setattr(ws_mod, "_load_store", lambda: EmbeddingStore())  # hermetic: no live gallery
+    monkeypatch.setattr(
+        ws_mod, "_load_store", lambda: EmbeddingStore()
+    )  # hermetic: no live gallery
     monkeypatch.setattr("app.config.settings.reid_interval_s", 0.0)
 
     client = TestClient(app)
-    with client.websocket_connect("/ws/capture") as sock:
+    with client.websocket_connect(f"/ws/capture?token={STAFF_WS_TOKEN}") as sock:
         sock.send_json({"type": "frame", "ts": 0.0, "jpg_b64": _jpg_b64(_marker_frame())})
         sock.receive_json()
         sock.send_json({"type": "end", "ts": 1.0})

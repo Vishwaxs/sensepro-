@@ -10,26 +10,26 @@
    ═══════════════════════════════════════════════════════════ */
 
 :root {
-  /* ─── Light palette ─── */
-  --bg: #F8F6F1;
-  --surface: #FFFFFF;
-  --surface-2: #F0EDE6;
-  --surface-3: #E8E4DC;
-  --line: rgba(0, 0, 0, 0.06);
-  --line-strong: rgba(0, 0, 0, 0.12);
-  --ink: #1A1A1F;
-  --ink-2: #3D3D45;
-  --muted: #8E8E9A;
+  /* ─── Light palette ("Ivory Modern") ─── */
+  --bg: #fcfbfa;
+  --surface: #ffffff;
+  --surface-2: #f4f1ea;
+  --surface-3: #e8e3d8;
+  --line: rgba(0, 0, 0, 0.09);
+  --line-strong: rgba(0, 0, 0, 0.18);
+  --ink: #0f172a;
+  --ink-2: #334155;
+  --muted: #64748b;
 
   /* ─── Accent system ─── */
-  --primary: #D97706;
-  --primary-deep: #B45309;
-  --primary-glow: rgba(217, 119, 6, 0.12);
+  --primary: #d97706;
+  --primary-deep: #b45309;
+  --primary-glow: rgba(217, 119, 6, 0.14);
   --accent: #059669;
-  --accent-glow: rgba(5, 150, 105, 0.10);
+  --accent-glow: rgba(5, 150, 105, 0.12);
   --ok: #059669;
-  --warn: #D97706;
-  --bad: #E11D48;
+  --warn: #d97706;
+  --bad: #dc2626;
 
   /* ─── Shared tokens (theme-independent) ─── */
   --radius: 12px;
@@ -44,26 +44,14 @@
   --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
   /* ─── Elevation — light mode ─── */
-  --shadow-1:
-    0 1px 2px 0 rgba(0, 0, 0, 0.05);
-  --shadow-2:
-    0 1px 3px 0 rgba(0, 0, 0, 0.08),
-    0 4px 12px -4px rgba(0, 0, 0, 0.06);
-  --shadow-cobalt:
-    0 4px 16px -4px rgba(0, 0, 0, 0.10),
-    0 12px 32px -8px rgba(0, 0, 0, 0.08);
-  --shadow-glow-accent:
-    0 0 0 1px rgba(5, 150, 105, 0.25),
-    0 0 16px -4px rgba(5, 150, 105, 0.15);
-  --shadow-glow-primary:
-    0 0 0 1px rgba(217, 119, 6, 0.25),
-    0 0 16px -4px rgba(217, 119, 6, 0.15);
-  --shadow-glass:
-    0 2px 8px -2px rgba(0, 0, 0, 0.06),
-    inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  --shadow-1: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-2: 0 1px 3px 0 rgba(0, 0, 0, 0.08), 0 4px 12px -4px rgba(0, 0, 0, 0.06);
+  --shadow-cobalt: 0 4px 16px -4px rgba(0, 0, 0, 0.1), 0 12px 32px -8px rgba(0, 0, 0, 0.08);
+  --shadow-glow-accent: 0 0 0 1px rgba(5, 150, 105, 0.25), 0 0 16px -4px rgba(5, 150, 105, 0.15);
+  --shadow-glow-primary: 0 0 0 1px rgba(217, 119, 6, 0.25), 0 0 16px -4px rgba(217, 119, 6, 0.15);
+  --shadow-glass: 0 2px 8px -2px rgba(0, 0, 0, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.6);
   --shadow-glass-hover:
-    0 8px 24px -8px rgba(0, 0, 0, 0.12),
-    0 2px 6px -2px rgba(217, 119, 6, 0.08),
+    0 8px 24px -8px rgba(0, 0, 0, 0.12), 0 2px 6px -2px rgba(217, 119, 6, 0.08),
     inset 0 1px 0 rgba(255, 255, 255, 0.7);
 
   /* ─── Motion ─── */
@@ -81,7 +69,7 @@
   --card-foreground: var(--ink);
   --popover: var(--surface-2);
   --popover-foreground: var(--ink);
-  --primary-foreground: #FFFFFF;
+  --primary-foreground: #ffffff;
   --secondary: var(--surface-2);
   --secondary-foreground: var(--ink);
   --muted-color: var(--surface-2);
@@ -89,7 +77,7 @@
   --accent-color: var(--surface-2);
   --accent-foreground: var(--ink);
   --destructive: var(--bad);
-  --destructive-foreground: #FFFFFF;
+  --destructive-foreground: #ffffff;
   --border: var(--line);
   --input: var(--line);
   --ring: var(--primary);
@@ -97,52 +85,41 @@
 
 /* ─── Dark theme overrides ("Obsidian Forge") ─── */
 .dark {
-  --bg: #07070A;
-  --surface: #0E0E12;
+  --bg: #07070a;
+  --surface: #0e0e12;
   --surface-2: #151519;
-  --surface-3: #1C1C22;
+  --surface-3: #1c1c22;
   --line: rgba(255, 255, 255, 0.06);
   --line-strong: rgba(255, 255, 255, 0.12);
-  --ink: #F0EDE6;
-  --ink-2: #C8C4BB;
-  --muted: #6B6B78;
+  --ink: #f0ede6;
+  --ink-2: #c8c4bb;
+  --muted: #6b6b78;
 
-  --primary: #F59E0B;
-  --primary-deep: #D97706;
+  --primary: #f59e0b;
+  --primary-deep: #d97706;
   --primary-glow: rgba(245, 158, 11, 0.15);
-  --accent: #10B981;
+  --accent: #10b981;
   --accent-glow: rgba(16, 185, 129, 0.12);
-  --ok: #34D399;
-  --warn: #FBBF24;
-  --bad: #F43F5E;
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --bad: #f43f5e;
 
-  --shadow-1:
-    0 1px 0 0 rgba(255, 255, 255, 0.03) inset,
-    0 1px 3px 0 rgba(0, 0, 0, 0.7);
+  --shadow-1: 0 1px 0 0 rgba(255, 255, 255, 0.03) inset, 0 1px 3px 0 rgba(0, 0, 0, 0.7);
   --shadow-2:
-    0 1px 0 0 rgba(255, 255, 255, 0.04) inset,
-    0 8px 24px -8px rgba(0, 0, 0, 0.8),
+    0 1px 0 0 rgba(255, 255, 255, 0.04) inset, 0 8px 24px -8px rgba(0, 0, 0, 0.8),
     0 2px 8px -2px rgba(245, 158, 11, 0.06);
   --shadow-cobalt:
-    0 1px 0 0 rgba(255, 255, 255, 0.05) inset,
-    0 12px 36px -12px rgba(0, 0, 0, 0.9),
+    0 1px 0 0 rgba(255, 255, 255, 0.05) inset, 0 12px 36px -12px rgba(0, 0, 0, 0.9),
     0 4px 16px -4px rgba(245, 158, 11, 0.08);
-  --shadow-glow-accent:
-    0 0 0 1px rgba(16, 185, 129, 0.2),
-    0 0 20px -4px rgba(16, 185, 129, 0.25);
-  --shadow-glow-primary:
-    0 0 0 1px rgba(245, 158, 11, 0.2),
-    0 0 20px -4px rgba(245, 158, 11, 0.2);
-  --shadow-glass:
-    0 8px 32px rgba(0, 0, 0, 0.5),
-    inset 0 1px 0 rgba(245, 158, 11, 0.04);
+  --shadow-glow-accent: 0 0 0 1px rgba(16, 185, 129, 0.2), 0 0 20px -4px rgba(16, 185, 129, 0.25);
+  --shadow-glow-primary: 0 0 0 1px rgba(245, 158, 11, 0.2), 0 0 20px -4px rgba(245, 158, 11, 0.2);
+  --shadow-glass: 0 8px 32px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(245, 158, 11, 0.04);
   --shadow-glass-hover:
-    0 12px 40px rgba(0, 0, 0, 0.6),
-    0 4px 16px -4px rgba(245, 158, 11, 0.1),
+    0 12px 40px rgba(0, 0, 0, 0.6), 0 4px 16px -4px rgba(245, 158, 11, 0.1),
     inset 0 1px 0 rgba(255, 255, 255, 0.06);
 
   --grain-opacity: 0.035;
-  --primary-foreground: #07070A;
+  --primary-foreground: #07070a;
 }
 
 /* ─── Smooth theme transition ─── */
@@ -165,7 +142,6 @@
   --radius-lg: var(--radius-lg);
   --radius-xl: var(--radius-xl);
   --radius-2xl: calc(var(--radius) + 8px);
-
 
   --color-background: var(--bg);
   --color-foreground: var(--ink);
@@ -218,7 +194,10 @@
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
-  h1, h2, h3, h4 {
+  h1,
+  h2,
+  h3,
+  h4 {
     font-family: var(--font-display);
     letter-spacing: -0.02em;
     font-weight: 800;
@@ -257,16 +236,12 @@
     inset: 0;
     border-radius: inherit;
     padding: 1px;
-    background: linear-gradient(
-      180deg,
-      rgba(245, 158, 11, 0.08) 0%,
-      rgba(255, 255, 255, 0) 40%
-    );
+    background: linear-gradient(180deg, rgba(245, 158, 11, 0.08) 0%, rgba(255, 255, 255, 0) 40%);
     -webkit-mask:
       linear-gradient(#000 0 0) content-box,
       linear-gradient(#000 0 0);
     -webkit-mask-composite: xor;
-            mask-composite: exclude;
+    mask-composite: exclude;
     pointer-events: none;
     z-index: 1;
   }
@@ -342,31 +317,32 @@
   background: linear-gradient(90deg, transparent, var(--line), transparent);
 }
 
-
 @utility app-bg {
   isolation: isolate;
   background-color: var(--bg);
   background-image:
     /* Amber nebula top-left */
-    radial-gradient(
-      900px 500px at 5% -8%,
-      rgba(245, 158, 11, 0.07) 0%,
-      transparent 55%
-    ),
+    radial-gradient(900px 500px at 5% -8%, rgba(217, 119, 6, 0.05) 0%, transparent 60%),
     /* Emerald nebula bottom-right */
-    radial-gradient(
-      700px 500px at 95% 105%,
-      rgba(16, 185, 129, 0.04) 0%,
-      transparent 60%
-    ),
+    radial-gradient(700px 500px at 95% 105%, rgba(5, 150, 105, 0.04) 0%, transparent 60%),
     /* Dot grid */
-    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.03) 1px, transparent 0);
+    radial-gradient(circle at 1px 1px, rgba(0, 0, 0, 0.04) 1px, transparent 0);
   background-size:
     auto,
     auto,
     24px 24px;
   background-attachment: fixed;
 }
+.dark .app-bg {
+  background-image:
+    /* Amber nebula top-left */
+    radial-gradient(900px 500px at 5% -8%, rgba(245, 158, 11, 0.07) 0%, transparent 55%),
+    /* Emerald nebula bottom-right */
+    radial-gradient(700px 500px at 95% 105%, rgba(16, 185, 129, 0.04) 0%, transparent 60%),
+    /* Dot grid */
+    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.03) 1px, transparent 0);
+}
+
 /* Film grain noise overlay — lightweight CSS-only approach */
 @utility grain-overlay {
   position: relative;
@@ -380,8 +356,8 @@
     pointer-events: none;
     opacity: var(--grain-opacity);
     background:
-      repeating-conic-gradient(rgba(255,255,255,0.02) 0% 25%, transparent 0% 50%) 0 0 / 2px 2px,
-      repeating-conic-gradient(rgba(255,255,255,0.04) 0% 25%, transparent 0% 50%) 1px 1px / 2px 2px;
+      repeating-conic-gradient(rgba(0, 0, 0, 0.02) 0% 25%, transparent 0% 50%) 0 0 / 2px 2px,
+      repeating-conic-gradient(rgba(0, 0, 0, 0.03) 0% 25%, transparent 0% 50%) 1px 1px / 2px 2px;
     mix-blend-mode: overlay;
   }
 }
@@ -392,20 +368,41 @@
 }
 
 @keyframes sensepro-scan {
-  0% { transform: translateY(-100%); opacity: 0; }
-  10% { opacity: 1; }
-  90% { opacity: 1; }
-  100% { transform: translateY(100%); opacity: 0; }
+  0% {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  90% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(100%);
+    opacity: 0;
+  }
 }
 
 @keyframes sensepro-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.55; transform: scale(1.35); }
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(1.35);
+  }
 }
 
 @keyframes sensepro-spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @utility pulse-dot {
@@ -435,14 +432,21 @@
 }
 
 /* Scrollbar */
-::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg);
+}
 ::-webkit-scrollbar-thumb {
   background: var(--surface-2);
   border-radius: 999px;
   border: 2px solid var(--bg);
 }
-::-webkit-scrollbar-thumb:hover { background: var(--line); }
+::-webkit-scrollbar-thumb:hover {
+  background: var(--line);
+}
 
 /* Consistent focus ring for interactive controls */
 @utility sp-focus {
@@ -482,7 +486,9 @@
     box-shadow 220ms var(--ease-out-quart),
     transform 220ms var(--ease-out-quart);
   &:focus-visible {
-    box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+    box-shadow:
+      0 0 0 2px var(--bg),
+      0 0 0 4px var(--accent);
   }
   &:active:not(:disabled) {
     transform: translateY(0.5px) scale(0.995);
@@ -495,16 +501,14 @@
 
 @utility sp-btn-primary {
   background: linear-gradient(180deg, var(--primary) 0%, var(--primary-deep) 100%);
-  color: #07070A;
+  color: #07070a;
   font-weight: 700;
   border: 1px solid rgba(245, 158, 11, 0.5);
   box-shadow:
     inset 0 1px 0 0 rgba(255, 255, 255, 0.2),
     0 6px 18px -8px rgba(245, 158, 11, 0.4);
   &:hover:not(:disabled) {
-    background: linear-gradient(180deg,
-      #FBBF24 0%,
-      var(--primary) 100%);
+    background: linear-gradient(180deg, #fbbf24 0%, var(--primary) 100%);
     box-shadow:
       inset 0 1px 0 0 rgba(255, 255, 255, 0.18),
       0 10px 24px -8px color-mix(in oklab, var(--primary) 70%, transparent);
@@ -513,9 +517,11 @@
 }
 
 @utility sp-btn-secondary {
-  background: linear-gradient(180deg,
+  background: linear-gradient(
+    180deg,
     color-mix(in oklab, var(--surface-2) 96%, #fff) 0%,
-    var(--surface-2) 100%);
+    var(--surface-2) 100%
+  );
   color: var(--ink);
   border: 1px solid var(--line);
   box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.04);
@@ -564,8 +570,12 @@
 
 /* Shimmer for skeleton loaders */
 @keyframes sensepro-shimmer {
-  0% { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
 }
 @utility shimmer {
   background: linear-gradient(
@@ -603,35 +613,71 @@
 
 /* --- Keyframes --- */
 @keyframes sp-float {
-  0%, 100% { transform: translateY(0); }
-  50%      { transform: translateY(-8px); }
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
 }
 
 @keyframes sp-breathe {
-  0%, 100% { opacity: 0.6; transform: scale(1); }
-  50%      { opacity: 1;   transform: scale(1.04); }
+  0%,
+  100% {
+    opacity: 0.6;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.04);
+  }
 }
 
 @keyframes sp-pulse-ring {
-  0%   { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.4); }
-  70%  { box-shadow: 0 0 0 10px rgba(245, 158, 11, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+  0% {
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(245, 158, 11, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0);
+  }
 }
 
 @keyframes sp-slide-up {
-  from { opacity: 0; transform: translateY(16px); }
-  to   { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @keyframes sp-fade-scale {
-  from { opacity: 0; transform: scale(0.96); }
-  to   { opacity: 1; transform: scale(1); }
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 @keyframes sp-gradient-shift {
-  0%   { background-position: 0% 50%; }
-  50%  { background-position: 100% 50%; }
-  100% { background-position: 0% 50%; }
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
 }
 
 /* --- Animation utilities --- */
@@ -657,34 +703,50 @@
 
 /* --- Glass-panel variants --- */
 @utility glass-frosted {
-  background: color-mix(in oklab, var(--bg) 75%, transparent);
+  background: color-mix(in oklab, var(--surface) 90%, transparent);
   backdrop-filter: blur(24px) saturate(1.3);
   -webkit-backdrop-filter: blur(24px) saturate(1.3);
   border: 1px solid var(--line);
-  box-shadow: var(--shadow-glass);
-  transition: all 0.35s cubic-bezier(0.25, 0.8, 0.25, 1);
-}
-
-@utility glass-ethereal {
-  background: color-mix(in oklab, var(--bg) 40%, transparent);
-  backdrop-filter: blur(40px) saturate(1.5);
-  -webkit-backdrop-filter: blur(40px) saturate(1.5);
-  border: 1px solid color-mix(in oklab, var(--line) 50%, transparent);
   box-shadow: var(--shadow-2);
   transition: all 0.35s cubic-bezier(0.25, 0.8, 0.25, 1);
 }
+.dark .glass-frosted {
+  background: color-mix(in oklab, var(--bg) 75%, transparent);
+  box-shadow: var(--shadow-glass);
+}
+
+@utility glass-ethereal {
+  background: color-mix(in oklab, var(--surface) 80%, transparent);
+  backdrop-filter: blur(40px) saturate(1.5);
+  -webkit-backdrop-filter: blur(40px) saturate(1.5);
+  border: 1px solid color-mix(in oklab, var(--line) 70%, transparent);
+  box-shadow: var(--shadow-2);
+  transition: all 0.35s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+.dark .glass-ethereal {
+  background: color-mix(in oklab, var(--bg) 40%, transparent);
+}
 
 @utility glass-obsidian {
-  background: color-mix(in oklab, var(--bg) 92%, transparent);
+  background: color-mix(in oklab, var(--surface-2) 95%, transparent);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
-  border: 1px solid color-mix(in oklab, var(--line) 40%, transparent);
+  border: 1px solid color-mix(in oklab, var(--line) 60%, transparent);
   box-shadow: var(--shadow-1);
   transition: all 0.35s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+.dark .glass-obsidian {
+  background: color-mix(in oklab, var(--bg) 92%, transparent);
 }
 
 /* --- Text effect utilities --- */
 @utility text-gradient {
+  background: linear-gradient(135deg, var(--primary-deep) 0%, var(--accent) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.dark .text-gradient {
   background: linear-gradient(135deg, var(--primary) 0%, var(--accent) 100%);
   -webkit-background-clip: text;
   background-clip: text;
@@ -692,12 +754,7 @@
 }
 
 @utility text-shimmer {
-  background: linear-gradient(
-    90deg,
-    var(--ink) 0%,
-    var(--primary) 40%,
-    var(--ink) 80%
-  );
+  background: linear-gradient(90deg, var(--ink) 0%, var(--primary) 40%, var(--ink) 80%);
   background-size: 200% 100%;
   -webkit-background-clip: text;
   background-clip: text;
@@ -707,16 +764,22 @@
 
 /* --- Hover/interaction utilities --- */
 @utility hover-lift {
-  transition: transform 0.3s ease, box-shadow 0.3s ease;
+  transition:
+    transform 0.3s ease,
+    box-shadow 0.3s ease;
 }
 
 @utility border-glow {
-  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.25), 0 0 16px rgba(245, 158, 11, 0.1);
+  box-shadow:
+    0 0 0 1px rgba(245, 158, 11, 0.25),
+    0 0 16px rgba(245, 158, 11, 0.1);
 }
 
 /* --- Respect reduced motion --- */
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
+  *,
+  *::before,
+  *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;

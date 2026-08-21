@@ -1,0 +1,24 @@
+-- SensePro+ · extend `authenticated` base grants to the tables the Phase-3
+-- Admin console actually reads.
+--
+-- 0005 deliberately withheld base privileges on devices, consent_records, and
+-- audit_log because no Phase-2 screen read them, and left a note to extend the
+-- grant "only when a real feature needs to read one of those tables from the
+-- client". Phase 3 shipped exactly that feature — apps/web/src/routes/
+-- _shell.admin.tsx calls fetchDevicesLive / fetchConsentsLive / fetchAuditLive
+-- — but the grant was never widened. Those tables already carry the correct
+-- RLS policies (devices: staff read; consent_records: admin + self; audit_log:
+-- admin only), so the policies were never the thing rejecting the query: with
+-- no GRANT, Postgres refuses the read BEFORE RLS is evaluated, which surfaced
+-- in the browser as a blanket 403 on every admin panel.
+--
+-- GRANT and RLS remain two additive layers. Widening the grant does not widen
+-- who can see rows — the existing role predicates still decide that, and they
+-- are unchanged here. This only lets the policy run at all.
+--
+-- `embeddings` is deliberately STILL NOT granted. No screen renders raw
+-- biometric templates, and per the CLAUDE.md privacy invariant nothing in the
+-- browser ever should; it keeps both its admin-only policy and its absent base
+-- privilege. Same for `user_roles`, which 0003 restricts to the auth hook.
+
+grant select on devices, consent_records, audit_log to authenticated;

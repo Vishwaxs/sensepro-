@@ -1,17 +1,25 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { AlertTriangle, ShieldCheck, Loader2, UserX, Inbox } from "lucide-react";
+import { AlertTriangle, ShieldCheck, Loader2, UserX, Inbox, HelpCircle } from "lucide-react";
+import { toast } from "sonner";
 import { StateChip } from "@/components/sp/StateChip";
 import { cn } from "@/lib/utils";
 import { guardRoute } from "@/lib/auth-guard";
-import { fetchMyAttendance } from "@/lib/data/my-attendance";
-import type { MyAttendanceResult, MyAttendanceRow } from "@/lib/data/my-attendance";
+import { fetchMyAttendance, fetchMyConsent } from "@/lib/data/my-attendance";
+import type {
+  MyAttendanceResult,
+  MyAttendanceRow,
+  MyConsent,
+  SessionMode,
+} from "@/lib/data/my-attendance";
+import { requestPresenceCheck } from "@/lib/data/attendance";
+import { fetchMyDeletionRequest, requestMyDeletion } from "@/lib/data/deletion";
 
 export const Route = createFileRoute("/_shell/me")({
-  beforeLoad: guardRoute("authenticated"),
+  beforeLoad: guardRoute(["student"]),
   head: () => ({
-    meta: [{ title: "Me · SensePro+" }],
+    meta: [{ title: "My Attendance · SensePro+" }],
   }),
   component: MePage,
 });
@@ -21,20 +29,91 @@ function MePage() {
   const [confirming, setConfirming] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [deleted, setDeleted] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [checkingSessionId, setCheckingSessionId] = useState<string | null>(null);
+  const [consent, setConsent] = useState<MyConsent | null | "loading">("loading");
+
+  const reload = () => fetchMyAttendance().then(setResult);
 
   useEffect(() => {
     let cancelled = false;
+    // /me is open to ANY authenticated user, but consent and deletion requests
+    // exist only for accounts linked to a student row. Staff opening this page
+    // would otherwise fire both calls and take a guaranteed 403 each — handled,
+    // but it filled the console with red herrings that read like a broken page.
+    // Resolve the profile first and only ask for student-scoped data if there
+    // is a student.
     fetchMyAttendance().then((r) => {
-      if (!cancelled) setResult(r);
+      if (cancelled) return;
+      setResult(r);
+      if (r.status === "no-student" || r.status === "error") {
+        setConsent(null);
+        return;
+      }
+      // Restores the "submitted" state after a reload — a denied request can
+      // be resubmitted, so only pending/approved counts as "already asked".
+      fetchMyDeletionRequest().then((req) => {
+        if (!cancelled && req && req.status !== "denied") setDeleted(true);
+      });
+      fetchMyConsent()
+        .then((c) => {
+          if (!cancelled) setConsent(c);
+        })
+        .catch(() => {
+          if (!cancelled) setConsent(null);
+        });
     });
     return () => {
       cancelled = true;
     };
   }, []);
 
+  async function handleDeleteSubmit() {
+    setDeleting(true);
+    try {
+      await requestMyDeletion();
+      setDeleted(true);
+      toast.success("Deletion request submitted.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Request failed — not submitted");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   // For the heat strip + history table
   const history: MyAttendanceRow[] = result.status === "ok" ? result.records : [];
   const strip = useMemo(() => history.slice(0, 21).reverse(), [history]);
+
+  // Attendance by session type: count + present-rate per mode, only for
+  // types that actually occurred (never invents a 0/0 row for a type never run).
+  const byType = useMemo(() => {
+    const modes: SessionMode[] = ["lecture", "exam", "workshop"];
+    return modes
+      .map((mode) => {
+        const rows = history.filter((h) => h.mode === mode);
+        const present = rows.filter((h) => h.state === "PRESENT").length;
+        return { mode, total: rows.length, present };
+      })
+      .filter((t) => t.total > 0);
+  }, [history]);
+
+  // A live session where the camera hasn't (yet) marked this student PRESENT
+  // — the only case "request presence check" makes sense for.
+  const liveUnverified = history.find((h) => h.live && h.state !== "PRESENT");
+
+  async function handleRequestCheck(sessionId: string) {
+    setCheckingSessionId(sessionId);
+    try {
+      await requestPresenceCheck(sessionId);
+      toast.success("Requested — your teacher can now verify you manually.");
+      await reload();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Request failed");
+    } finally {
+      setCheckingSessionId(null);
+    }
+  }
 
   // ---- Loading state ----
   if (result.status === "loading") {
@@ -116,7 +195,9 @@ function MePage() {
           confirmed={confirmed}
           setConfirmed={setConfirmed}
           deleted={deleted}
-          setDeleted={setDeleted}
+          deleting={deleting}
+          onSubmit={handleDeleteSubmit}
+          consent={consent}
         />
       </div>
     );
@@ -124,136 +205,219 @@ function MePage() {
 
   // ---- OK: real attendance data ----
   return (
-    <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-      <div className="space-y-6">
-        {/* Heat strip */}
-        <section className="glass-panel p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--muted)]">
-                Attendance · last {strip.length} sessions
-              </div>
-              <div className="mt-0.5 font-display text-xl font-extrabold tracking-tight text-[color:var(--ink)]">
-                Your pattern
-              </div>
-            </div>
-            <Legend />
+    <div className="space-y-6">
+      {liveUnverified && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[color:var(--warn)]/40 bg-[color:var(--warn)]/10 px-4 py-3">
+          <div className="flex items-center gap-2 text-sm text-[color:var(--ink)]">
+            <HelpCircle className="h-4 w-4 shrink-0 text-[color:var(--warn)]" />
+            The camera hasn't marked you present for {liveUnverified.class_name} yet.
           </div>
-          <div
-            className="mt-5 grid gap-1.5"
-            style={{ gridTemplateColumns: `repeat(${Math.min(strip.length, 21)}, minmax(0,1fr))` }}
+          <button
+            disabled={checkingSessionId === liveUnverified.session_id}
+            onClick={() => void handleRequestCheck(liveUnverified.session_id)}
+            className="sp-focus h-10 shrink-0 rounded-md border border-[color:var(--warn)]/50 bg-[color:var(--surface)] px-4 text-xs font-semibold text-[color:var(--warn)] transition-colors hover:bg-[color:var(--warn)]/10 disabled:opacity-60"
           >
-            {strip.map((h, i) => (
-              <div
-                key={i}
-                title={`${h.class_name} · ${new Date(h.date).toLocaleDateString()} · ${h.state}`}
-                className="aspect-square rounded-sm border border-[color:var(--line)]"
-                style={{
-                  background:
-                    h.state === "PRESENT"
-                      ? "color-mix(in oklab, var(--ok) 60%, transparent)"
-                      : h.state === "UNVERIFIED"
-                        ? "color-mix(in oklab, var(--warn) 55%, transparent)"
-                        : "var(--surface-2)",
-                }}
-              />
-            ))}
-          </div>
-        </section>
+            {checkingSessionId === liveUnverified.session_id
+              ? "Requesting…"
+              : "Request presence check"}
+          </button>
+        </div>
+      )}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+        <div className="space-y-6">
+          {/* Heat strip */}
+          <section className="glass-panel p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--muted)]">
+                  Attendance · last {strip.length} sessions
+                </div>
+                <div className="mt-0.5 font-display text-xl font-extrabold tracking-tight text-[color:var(--ink)]">
+                  Your pattern
+                </div>
+              </div>
+              <Legend />
+            </div>
+            <div
+              className="mt-5 grid gap-1.5"
+              style={{
+                gridTemplateColumns: `repeat(${Math.min(strip.length, 21)}, minmax(0,1fr))`,
+              }}
+            >
+              {strip.map((h, i) => (
+                <div
+                  key={i}
+                  title={`${h.class_name} · ${new Date(h.date).toLocaleDateString()} · ${h.state}`}
+                  className="aspect-square rounded-sm border border-[color:var(--line)]"
+                  style={{
+                    background:
+                      h.state === "PRESENT"
+                        ? "color-mix(in oklab, var(--ok) 60%, transparent)"
+                        : h.state === "UNVERIFIED"
+                          ? "color-mix(in oklab, var(--warn) 55%, transparent)"
+                          : "var(--surface-2)",
+                  }}
+                />
+              ))}
+            </div>
+          </section>
 
-        {/* Per-session list */}
-        <section className="glass-panel overflow-hidden">
-          <header className="border-b border-[color:var(--line)] px-5 py-4">
-            <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--muted)]">
-              Sessions
-            </div>
-            <div className="mt-0.5 font-display text-lg font-extrabold tracking-tight text-[color:var(--ink)]">
-              Detailed history
-            </div>
-          </header>
-          <div className="max-h-[440px] overflow-y-auto">
-            <table className="w-full">
-              <thead className="sticky top-0 bg-[color:var(--surface)]">
-                <tr className="border-b border-[color:var(--line)]">
-                  {["Date", "Class", "State"].map((h) => (
-                    <th
-                      key={h}
-                      className="px-5 py-2 text-left font-mono-nums text-[10px] uppercase tracking-[0.16em] text-[color:var(--muted)]"
-                    >
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {history.map((h, i) => (
-                  <tr
-                    key={i}
-                    className="border-b border-[color:var(--line)]/60 hover:bg-[color:var(--surface-2)]/40"
+          {/* Attendance by type — only for types that actually occurred */}
+          {byType.length > 1 && (
+            <section className="glass-panel p-6">
+              <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--muted)]">
+                Attendance by type
+              </div>
+              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                {byType.map((t) => (
+                  <div
+                    key={t.mode}
+                    className="rounded-md border border-[color:var(--line)] bg-[color:var(--surface-2)] px-4 py-3"
                   >
-                    <td className="px-5 py-2.5 font-mono-nums text-xs text-[color:var(--muted)]">
-                      {new Date(h.date).toLocaleDateString()}
-                    </td>
-                    <td className="px-5 py-2.5 text-[color:var(--ink)]">{h.class_name}</td>
-                    <td className="px-5 py-2.5">
-                      <StateChip state={h.state} />
-                    </td>
-                  </tr>
+                    <div className="font-mono-nums text-[10px] uppercase tracking-[0.16em] text-[color:var(--muted)]">
+                      {t.mode}
+                    </div>
+                    <div className="mt-1 font-display text-xl font-extrabold tracking-tight text-[color:var(--ink)]">
+                      {t.present}
+                      <span className="ml-1 font-mono-nums text-sm text-[color:var(--muted)]">
+                        / {t.total}
+                      </span>
+                    </div>
+                  </div>
                 ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      </div>
+              </div>
+            </section>
+          )}
 
-      {/* Right column */}
-      <RightColumn
-        confirming={confirming}
-        setConfirming={setConfirming}
-        confirmed={confirmed}
-        setConfirmed={setConfirmed}
-        deleted={deleted}
-        setDeleted={setDeleted}
-      />
+          {/* Per-session list */}
+          <section className="glass-panel overflow-hidden">
+            <header className="border-b border-[color:var(--line)] px-5 py-4">
+              <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--muted)]">
+                Sessions
+              </div>
+              <div className="mt-0.5 font-display text-lg font-extrabold tracking-tight text-[color:var(--ink)]">
+                Detailed history
+              </div>
+            </header>
+            <div className="max-h-[440px] overflow-y-auto">
+              <table className="w-full">
+                <thead className="sticky top-0 bg-[color:var(--surface)]">
+                  <tr className="border-b border-[color:var(--line)]">
+                    {["Date", "Class", "State"].map((h) => (
+                      <th
+                        key={h}
+                        className="px-5 py-2 text-left font-mono-nums text-[10px] uppercase tracking-[0.16em] text-[color:var(--muted)]"
+                      >
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {history.map((h, i) => (
+                    <tr
+                      key={i}
+                      className="border-b border-[color:var(--line)]/60 hover:bg-[color:var(--surface-2)]/40"
+                    >
+                      <td className="px-5 py-2.5 font-mono-nums text-xs text-[color:var(--muted)]">
+                        {new Date(h.date).toLocaleDateString()}
+                      </td>
+                      <td className="px-5 py-2.5 text-[color:var(--ink)]">{h.class_name}</td>
+                      <td className="px-5 py-2.5">
+                        <StateChip state={h.state} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        {/* Right column */}
+        <RightColumn
+          confirming={confirming}
+          setConfirming={setConfirming}
+          confirmed={confirmed}
+          setConfirmed={setConfirmed}
+          deleted={deleted}
+          deleting={deleting}
+          onSubmit={handleDeleteSubmit}
+          consent={consent}
+        />
+      </div>
     </div>
   );
 }
 
-/** Right-side panel: Consent + Delete my data (unchanged stub). */
+/** Right-side panel: Consent + Delete my data. Submitting posts a real
+ *  right-to-erasure request (POST /v1/students/me/deletion-request) — an
+ *  admin reviews and approves it before anything is actually purged. */
 function RightColumn({
   confirming,
   setConfirming,
   confirmed,
   setConfirmed,
   deleted,
-  setDeleted,
+  deleting,
+  onSubmit,
+  consent,
 }: {
   confirming: boolean;
   setConfirming: (v: boolean) => void;
   confirmed: boolean;
   setConfirmed: (v: boolean) => void;
   deleted: boolean;
-  setDeleted: (v: boolean) => void;
+  deleting: boolean;
+  onSubmit: () => void;
+  consent: MyConsent | null | "loading";
 }) {
+  const consentIsActive = consent !== "loading" && consent !== null && consent.status === "active";
+  const consentColor = consent === "loading" ? "muted" : consentIsActive ? "ok" : "bad";
+  const consentLabel =
+    consent === "loading"
+      ? "Loading…"
+      : consent === null
+        ? "No record on file"
+        : `${consent.status === "active" ? "Active" : "Withdrawn"} · ${consent.version}`;
+
   return (
     <div className="space-y-6">
       <section className="glass-panel p-6">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-md border border-[color:var(--ok)]/40 bg-[color:var(--ok)]/10 text-[color:var(--ok)]">
+          <div
+            className={cn(
+              "flex h-10 w-10 items-center justify-center rounded-md border",
+              consentColor === "ok" &&
+                "border-[color:var(--ok)]/40 bg-[color:var(--ok)]/10 text-[color:var(--ok)]",
+              consentColor === "bad" &&
+                "border-[color:var(--bad)]/40 bg-[color:var(--bad)]/10 text-[color:var(--bad)]",
+              consentColor === "muted" &&
+                "border-[color:var(--line)] bg-[color:var(--surface-2)] text-[color:var(--muted)]",
+            )}
+          >
             <ShieldCheck className="h-5 w-5" />
           </div>
           <div>
             <div className="font-mono-nums text-[11px] uppercase tracking-[0.18em] text-[color:var(--muted)]">
               Consent status
             </div>
-            <div className="font-display text-lg font-extrabold tracking-tight text-[color:var(--ok)]">
-              Active · v2.1
+            <div
+              className={cn(
+                "font-display text-lg font-extrabold tracking-tight",
+                consentColor === "ok" && "text-[color:var(--ok)]",
+                consentColor === "bad" && "text-[color:var(--bad)]",
+                consentColor === "muted" && "text-[color:var(--muted)]",
+              )}
+            >
+              {consentLabel}
             </div>
           </div>
         </div>
         <p className="mt-4 text-sm text-[color:var(--muted)]">
-          You've consented to camera-based classroom attendance. Frames are processed in memory and
-          never stored. Aggregate zone analytics never include your identity.
+          {consent !== "loading" && consent !== null
+            ? `Signed ${new Date(consent.signed_at).toLocaleDateString()}. Frames are processed in memory and never stored. Aggregate zone analytics never include your identity.`
+            : "You've consented to camera-based classroom attendance. Frames are processed in memory and never stored. Aggregate zone analytics never include your identity."}
         </p>
       </section>
 
@@ -272,8 +436,9 @@ function RightColumn({
           </div>
         </div>
         <p className="mt-3 text-sm text-[color:var(--muted)]">
-          Removes your biometric template and unlinks past attendance from your identity. Aggregate
-          analytics (already de-identified) are retained.
+          Purges your enrolled biometric template and withdraws your consent once an admin approves.
+          Past attendance records are retained for academic record-keeping; aggregate analytics
+          (already de-identified) are unaffected either way.
         </p>
 
         <AnimatePresence mode="wait">
@@ -333,10 +498,11 @@ function RightColumn({
                       Cancel
                     </button>
                     <button
-                      onClick={() => setDeleted(true)}
-                      className="sp-focus h-12 flex-1 rounded-md bg-[color:var(--bad)] text-xs font-semibold text-white transition-colors hover:opacity-90"
+                      onClick={onSubmit}
+                      disabled={deleting}
+                      className="sp-focus h-12 flex-1 rounded-md bg-[color:var(--bad)] text-xs font-semibold text-white transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      Submit deletion
+                      {deleting ? "Submitting…" : "Submit deletion"}
                     </button>
                   </div>
                 </>

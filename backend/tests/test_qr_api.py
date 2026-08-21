@@ -30,13 +30,31 @@ def _jwt(role: str | None) -> str:
     return f"h.{payload}.s"
 
 
+def _jwt_sub(role: str | None, sub: str) -> str:
+    """Test token carrying an explicit subject, so the fake resolver in
+    conftest can look the uid up in DB_ROLES (standing in for user_roles)."""
+    claims: dict = {"sub": sub}
+    if role is not None:
+        claims["app_role"] = role
+    payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+    return f"h.{payload}.s"
+
+
 def _hdr(role: str) -> dict:
     return {"Authorization": f"Bearer {_jwt(role)}"}
 
 
 class FakeQRWriter:
     def __init__(
-        self, *, session=None, student=None, token=None, claim="win", present=False, db_role=None
+        self,
+        *,
+        session=None,
+        student=None,
+        token=None,
+        claim="win",
+        present=False,
+        db_role=None,
+        qr_enabled=True,
     ):
         self.session = session
         self.student = student
@@ -44,8 +62,12 @@ class FakeQRWriter:
         self.claim = claim
         self.present = present
         self.db_role = db_role
+        self.qr_enabled = qr_enabled
         self.audits: list = []
         self.closed_qr = False
+
+    def get_setting(self, key):
+        return {"key": key, "value": self.qr_enabled}
 
     def active_session(self, session_id):
         return self.session
@@ -115,6 +137,24 @@ def test_issue_token_inactive_session(monkeypatch):
     assert r.status_code == 409
 
 
+@pytest.mark.parametrize("mode", ["exam", "workshop"])
+def test_issue_token_rejected_for_non_attendance_mode(monkeypatch, mode):
+    _patch_writer(monkeypatch, FakeQRWriter(session={**SESSION, "mode": mode}))
+    r = client.post("/v1/qr/token", json={"session_id": "sess-1"}, headers=_hdr("teacher"))
+    assert r.status_code == 409
+    assert "attendance" in r.json()["detail"].lower()
+
+
+def test_issue_token_blocked_when_globally_disabled(monkeypatch):
+    """Admin flipped app_settings.qr_checkin_enabled=false (migration 0014) —
+    no new token mints, campus-wide, without touching config or redeploying."""
+    writer = FakeQRWriter(session=SESSION, qr_enabled=False)
+    _patch_writer(monkeypatch, writer)
+    r = client.post("/v1/qr/token", json={"session_id": "sess-1"}, headers=_hdr("teacher"))
+    assert r.status_code == 403
+    assert "disabled" in r.json()["detail"].lower()
+
+
 def test_close_window(monkeypatch):
     writer = FakeQRWriter()
     _patch_writer(monkeypatch, writer)
@@ -125,13 +165,16 @@ def test_close_window(monkeypatch):
 def test_issue_token_role_from_db_when_jwt_has_no_app_role(monkeypatch):
     """Access Token Hook disabled → JWT carries no app_role → the role is resolved
     from user_roles after a real token verify. The staff endpoint still works."""
+    from tests.conftest import DB_ROLES
+
     writer = FakeQRWriter(session=SESSION, db_role="admin")
     _patch_writer(monkeypatch, writer)
-    _patch_user(monkeypatch)  # _verify_user validates the token -> uid, no network
+    _patch_user(monkeypatch)
+    DB_ROLES["uid-1"] = "admin"
     r = client.post(
         "/v1/qr/token",
         json={"session_id": "sess-1"},
-        headers={"Authorization": f"Bearer {_jwt(None)}"},  # empty claims, no app_role
+        headers={"Authorization": f"Bearer {_jwt_sub(None, 'uid-1')}"},  # no app_role claim
     )
     assert r.status_code == 200
     assert r.json()["token"] == "tok-xyz"
@@ -183,6 +226,22 @@ def test_claim_wrong_class(monkeypatch):
         FakeQRWriter(student=other, token={"session_id": "sess-1"}, session=SESSION),
     )
     assert _claim().status_code == 403
+
+
+@pytest.mark.parametrize("mode", ["exam", "workshop"])
+def test_claim_rejected_for_non_attendance_mode(monkeypatch, mode):
+    _patch_user(monkeypatch)
+    _patch_writer(
+        monkeypatch,
+        FakeQRWriter(
+            student=STUDENT,
+            token={"session_id": "sess-1"},
+            session={**SESSION, "mode": mode},
+        ),
+    )
+    r = _claim()
+    assert r.status_code == 409
+    assert "attendance" in r.json()["detail"].lower()
 
 
 def test_claim_already_present(monkeypatch):

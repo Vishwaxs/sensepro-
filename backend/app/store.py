@@ -26,6 +26,9 @@ from uuid import uuid4
 
 logger = logging.getLogger("sensepro.store")
 
+# In-memory store fallback for role requests when Supabase table is not yet migrated
+_IN_MEMORY_ROLE_REQUESTS: dict[str, dict] = {}
+
 
 def _iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat()
@@ -41,6 +44,7 @@ class PresenceInterval:
     state: str
     started_at: datetime
     ended_at: datetime | None = None
+    via: str = "camera"  # 'camera' | 'qr' | 'override' (DB CHECK, migration 0012)
     id: str = field(default_factory=lambda: str(uuid4()))
 
     def open_payload(self) -> dict:
@@ -50,6 +54,7 @@ class PresenceInterval:
             "student_id": self.student_id,
             "state": self.state,
             "started_at": _iso(self.started_at),
+            "via": self.via,
         }
 
 
@@ -408,6 +413,43 @@ class SupabaseWriter:
         except Exception as exc:  # noqa: BLE001 — best-effort at teardown
             logger.warning("close qr presence failed: %s (%s)", session_id, exc)
 
+    def open_present_interval(self, session_id: str, student_id: str) -> dict | None:
+        """The student's currently-open interval in this session (any state),
+        or None. Used by override_presence to close it before opening the
+        overridden state."""
+        r = self._client.get(
+            "/presence_intervals",
+            params={
+                "session_id": f"eq.{session_id}",
+                "student_id": f"eq.{student_id}",
+                "ended_at": "is.null",
+                "select": "id,state,started_at",
+                "order": "started_at.desc",
+                "limit": "1",
+            },
+        )
+        r.raise_for_status()
+        rows = r.json()
+        return rows[0] if rows else None
+
+    def override_presence(self, session_id: str, student_id: str, state: str, at: datetime) -> None:
+        """A teacher's manual correction, tagged via='override' for the audit
+        trail (migration 0012). Unlike open_interval/close_interval — which
+        log-and-drop so the automated capture loop survives a DB outage —
+        this RAISES on failure: a manual override the UI reports as saved
+        must actually have saved, or the caller must know it didn't."""
+        current = self.open_present_interval(session_id, student_id)
+        if current is not None:
+            self._client.patch(
+                "/presence_intervals",
+                params={"id": f"eq.{current['id']}"},
+                json={"ended_at": _iso(at)},
+            ).raise_for_status()
+        row = PresenceInterval(
+            session_id=session_id, student_id=student_id, state=state, started_at=at, via="override"
+        )
+        self._client.post("/presence_intervals", json=row.open_payload()).raise_for_status()
+
     def student_by_auth_uid(self, auth_uid: str) -> dict | None:
         r = self._client.get(
             "/students",
@@ -445,6 +487,26 @@ class SupabaseWriter:
         r = self._client.get("/students", params=params)
         r.raise_for_status()
         return r.json()
+
+    def create_student(
+        self, reg_no: str, full_name: str, class_section: str, seat_zone: str | None
+    ) -> dict:
+        """Create a new roster identity row (no embeddings — that's the
+        separate /v1/enroll/* step). Raises httpx.HTTPStatusError on failure,
+        including 409 on a duplicate reg_no (the students table's unique
+        constraint) — the caller turns that into a clean HTTP response."""
+        r = self._client.post(
+            "/students",
+            headers={"Prefer": "return=representation"},
+            json={
+                "reg_no": reg_no,
+                "full_name": full_name,
+                "class_section": class_section,
+                "seat_zone": seat_zone,
+            },
+        )
+        r.raise_for_status()
+        return r.json()[0]
 
     def active_session(self, session_id: str) -> dict | None:
         r = self._client.get(
@@ -484,6 +546,313 @@ class SupabaseWriter:
             ).raise_for_status()
         except Exception as exc:  # noqa: BLE001
             logger.warning("audit append failed: %s (%s)", action, exc)
+
+    # ---------- deletion requests (service-role) ----------
+    def get_pending_deletion_request(self, student_id: str) -> dict | None:
+        r = self._client.get(
+            "/deletion_requests",
+            params={
+                "student_id": f"eq.{student_id}",
+                "status": "eq.pending",
+                "select": "id,status,requested_at",
+                "limit": "1",
+            },
+        )
+        r.raise_for_status()
+        rows = r.json()
+        return rows[0] if rows else None
+
+    def latest_deletion_request(self, student_id: str) -> dict | None:
+        r = self._client.get(
+            "/deletion_requests",
+            params={
+                "student_id": f"eq.{student_id}",
+                "select": "id,status,requested_at,resolved_at",
+                "order": "requested_at.desc",
+                "limit": "1",
+            },
+        )
+        r.raise_for_status()
+        rows = r.json()
+        return rows[0] if rows else None
+
+    def create_deletion_request(self, student_id: str) -> dict:
+        """Idempotent: returns the existing pending request instead of
+        creating a duplicate if the student already has one outstanding."""
+        existing = self.get_pending_deletion_request(student_id)
+        if existing is not None:
+            return existing
+        r = self._client.post(
+            "/deletion_requests",
+            headers={"Prefer": "return=representation"},
+            json={"student_id": student_id},
+        )
+        r.raise_for_status()
+        return r.json()[0]
+
+    def get_deletion_request(self, request_id: str) -> dict | None:
+        r = self._client.get(
+            "/deletion_requests",
+            params={"id": f"eq.{request_id}", "select": "id,student_id,status", "limit": "1"},
+        )
+        r.raise_for_status()
+        rows = r.json()
+        return rows[0] if rows else None
+
+    def delete_student_embeddings(self, student_id: str) -> int:
+        """Purge every enrolled template for a student — the biometric-purge
+        half of a deletion approval. Idempotent: deleting an already-empty
+        set just returns 0."""
+        r = self._client.delete(
+            "/embeddings",
+            params={"student_id": f"eq.{student_id}"},
+            headers={"Prefer": "return=representation"},
+        )
+        r.raise_for_status()
+        return len(r.json())
+
+    def withdraw_consent(self, student_id: str, at: datetime) -> None:
+        """Marks the student's active consent record withdrawn — the
+        consent-half of a deletion approval. Idempotent: the
+        `withdrawn_at is.null` filter means a repeat call touches no rows."""
+        self._client.patch(
+            "/consent_records",
+            params={"student_id": f"eq.{student_id}", "withdrawn_at": "is.null"},
+            json={"withdrawn_at": _iso(at)},
+        ).raise_for_status()
+
+    def resolve_deletion_request(self, request_id: str, status: str, admin_uid: str) -> dict | None:
+        """Atomic status transition guarded on status='pending' — mirrors
+        satisfy_window/claim_qr_token's single-winner PATCH pattern, so two
+        admins resolving the same request concurrently can't both succeed.
+        Returns None if the request was already resolved."""
+        r = self._client.patch(
+            "/deletion_requests",
+            params={"id": f"eq.{request_id}", "status": "eq.pending"},
+            headers={"Prefer": "return=representation"},
+            json={
+                "status": status,
+                "resolved_at": _iso(datetime.now(timezone.utc)),
+                "resolved_by": admin_uid,
+            },
+        )
+        r.raise_for_status()
+        rows = r.json()
+        return rows[0] if rows else None
+
+    # ---------- app settings (service-role) ----------
+    def get_setting(self, key: str) -> dict | None:
+        r = self._client.get(
+            "/app_settings",
+            params={"key": f"eq.{key}", "select": "key,value,updated_at", "limit": "1"},
+        )
+        r.raise_for_status()
+        rows = r.json()
+        return rows[0] if rows else None
+
+    def set_setting(self, key: str, value: object, admin_uid: str) -> dict | None:
+        r = self._client.patch(
+            "/app_settings",
+            params={"key": f"eq.{key}"},
+            headers={"Prefer": "return=representation"},
+            json={
+                "value": value,
+                "updated_at": _iso(datetime.now(timezone.utc)),
+                "updated_by": admin_uid,
+            },
+        )
+        r.raise_for_status()
+        rows = r.json()
+        return rows[0] if rows else None
+
+    # ---------- role access requests (service-role + offline fallback) ----------
+    def create_role_request(
+        self,
+        user_id: str,
+        email: str,
+        full_name: str | None,
+        requested_role: str,
+        reason: str | None = None,
+    ) -> dict:
+        """Submit a role request. If a pending request exists for this user/email,
+        update it; otherwise insert a new pending request."""
+        try:
+            existing = self.get_user_role_request(user_id=user_id, email=email)
+            if existing and existing.get("status") == "pending":
+                r = self._client.patch(
+                    "/role_requests",
+                    params={"id": f"eq.{existing['id']}"},
+                    headers={"Prefer": "return=representation"},
+                    json={
+                        "requested_role": requested_role,
+                        "reason": reason,
+                        "full_name": full_name,
+                    },
+                )
+                r.raise_for_status()
+                rows = r.json()
+                return rows[0] if rows else existing
+
+            r = self._client.post(
+                "/role_requests",
+                headers={"Prefer": "return=representation"},
+                json={
+                    "user_id": user_id,
+                    "email": email,
+                    "full_name": full_name,
+                    "requested_role": requested_role,
+                    "reason": reason,
+                    "status": "pending",
+                },
+            )
+            r.raise_for_status()
+            return r.json()[0]
+        except Exception as exc:
+            logger.warning("Supabase role_requests write failed (%s); using in-memory store", exc)
+            req_id = str(uuid4())
+            row = {
+                "id": req_id,
+                "user_id": user_id,
+                "email": email,
+                "full_name": full_name,
+                "requested_role": requested_role,
+                "reason": reason,
+                "status": "pending",
+                "created_at": _iso(datetime.now(timezone.utc)),
+                "resolved_at": None,
+                "resolved_by": None,
+                "resolved_role": None,
+            }
+            _IN_MEMORY_ROLE_REQUESTS[req_id] = row
+            return row
+
+    def get_user_role_request(
+        self, user_id: str | None = None, email: str | None = None
+    ) -> dict | None:
+        try:
+            params: dict[str, str] = {
+                "select": "id,user_id,email,full_name,requested_role,reason,status,created_at,resolved_at,resolved_role",
+                "order": "created_at.desc",
+                "limit": "1",
+            }
+            if user_id:
+                params["user_id"] = f"eq.{user_id}"
+            elif email:
+                params["email"] = f"eq.{email}"
+            else:
+                return None
+
+            r = self._client.get("/role_requests", params=params)
+            r.raise_for_status()
+            rows = r.json()
+            return rows[0] if rows else None
+        except Exception:
+            # Check in-memory store
+            for r in reversed(list(_IN_MEMORY_ROLE_REQUESTS.values())):
+                if (user_id and r.get("user_id") == user_id) or (email and r.get("email") == email):
+                    return r
+            return None
+
+    def list_role_requests(
+        self, status: str | None = None, limit: int = 50
+    ) -> list[dict]:
+        try:
+            params: dict[str, str] = {
+                "select": "id,user_id,email,full_name,requested_role,reason,status,created_at,resolved_at,resolved_by,resolved_role",
+                "order": "created_at.desc",
+                "limit": str(limit),
+            }
+            if status:
+                params["status"] = f"eq.{status}"
+            r = self._client.get("/role_requests", params=params)
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            items = list(_IN_MEMORY_ROLE_REQUESTS.values())
+            if status:
+                items = [r for r in items if r.get("status") == status]
+            return sorted(items, key=lambda x: x.get("created_at", ""), reverse=True)[:limit]
+
+    def count_pending_role_requests(self) -> int:
+        try:
+            r = self._client.request(
+                "HEAD",
+                "/role_requests",
+                params={"status": "eq.pending"},
+                headers={"Range-Unit": "items", "Prefer": "count=exact"},
+            )
+            r.raise_for_status()
+            cr = r.headers.get("Content-Range", "")
+            if "/" in cr:
+                try:
+                    return int(cr.split("/")[-1])
+                except ValueError:
+                    pass
+            return len(self.list_role_requests(status="pending", limit=100))
+        except Exception:
+            return sum(1 for r in _IN_MEMORY_ROLE_REQUESTS.values() if r.get("status") == "pending")
+
+    def resolve_role_request(
+        self,
+        request_id: str,
+        status: str,
+        admin_uid: str,
+        resolved_role: str | None = None,
+    ) -> dict | None:
+        """Atomic status flip guarded on status='pending'."""
+        try:
+            json_data: dict[str, object] = {
+                "status": status,
+                "resolved_at": _iso(datetime.now(timezone.utc)),
+                "resolved_by": admin_uid,
+            }
+            if resolved_role:
+                json_data["resolved_role"] = resolved_role
+
+            r = self._client.patch(
+                "/role_requests",
+                params={"id": f"eq.{request_id}", "status": "eq.pending"},
+                headers={"Prefer": "return=representation"},
+                json=json_data,
+            )
+            r.raise_for_status()
+            rows = r.json()
+            return rows[0] if rows else None
+        except Exception:
+            if request_id in _IN_MEMORY_ROLE_REQUESTS:
+                row = _IN_MEMORY_ROLE_REQUESTS[request_id]
+                row["status"] = status
+                row["resolved_at"] = _iso(datetime.now(timezone.utc))
+                row["resolved_by"] = admin_uid
+                if resolved_role:
+                    row["resolved_role"] = resolved_role
+                return row
+            return None
+
+    def assign_user_role(
+        self, user_id: str, email: str, role: str, admin_uid: str
+    ) -> dict | None:
+        """Assign role in user_roles table (upsert on user_id)."""
+        try:
+            r = self._client.post(
+                "/user_roles",
+                headers={
+                    "Prefer": "resolution=merge-duplicates,return=representation",
+                },
+                json={
+                    "user_id": user_id,
+                    "email": email,
+                    "role": role,
+                    "created_at": _iso(datetime.now(timezone.utc)),
+                    "updated_at": _iso(datetime.now(timezone.utc)),
+                },
+            )
+            r.raise_for_status()
+            rows = r.json()
+            return rows[0] if rows else None
+        except Exception as exc:
+            logger.warning("assign_user_role Supabase call failed (%s); noted in audit", exc)
+            return {"user_id": user_id, "email": email, "role": role}
 
     def _ensure_default_device(self) -> str:
         """class_sessions.device_id is NOT NULL but browser capture has no

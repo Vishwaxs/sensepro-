@@ -4,7 +4,7 @@
 actually sees their enrolled face. Back-row, briefly-occluded, or late students can therefore
 read as ABSENT even though they are in the room. The obvious fix — let a student tap a code to
 mark themselves present — reopens the exact proxy hole the whole system exists to close: a code
-can be screenshotted and shared. The §18 / Phase-5 design (report ch8 §8.2, viva Q&A) resolves
+can be screenshotted and shared. The Section18 / Phase-5 design (report ch8 Section8.2, viva Q&A) resolves
 this with two factors: **the QR proves _in the room_; the face proves _this person_; presence
 requires both.** This ADR records the mechanism that realises that intent. (The detailed token /
 window design here is our implementation of the documented high-level design, not a verbatim

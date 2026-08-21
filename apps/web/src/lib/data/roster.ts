@@ -8,6 +8,7 @@ export interface ActiveSession {
   id: string;
   class_section: string;
   subject: string | null;
+  mode: "lecture" | "exam" | "workshop";
   starts_at: string;
 }
 
@@ -24,26 +25,28 @@ export interface IntervalRow {
   state: PresenceState;
   started_at: string;
   ended_at: string | null;
-  via: "camera" | "qr" | null; // camera = passive recognition, qr = absentee selfie
+  via: "camera" | "qr" | "override" | null; // camera = passive recognition, qr = absentee selfie, override = teacher-corrected
 }
 
-/** Latest open session, or null when nothing is live. */
-export async function fetchActiveSession(): Promise<ActiveSession | null> {
-  const { data, error } = await supabase
+/** Latest open session, optionally scoped to one module. */
+export async function fetchActiveSession(
+  mode?: ActiveSession["mode"],
+): Promise<ActiveSession | null> {
+  let query = supabase
     .from("class_sessions")
-    .select("id, class_section, subject, starts_at")
+    .select("id, class_section, subject, mode, starts_at")
     .is("ends_at", null)
-    .order("starts_at", { ascending: false })
-    .limit(1);
+    .order("starts_at", { ascending: false });
+  if (mode) query = query.eq("mode", mode);
+  const { data, error } = await query.limit(1);
   if (error) throw error;
-  return data?.[0] ?? null;
+  return (data?.[0] as ActiveSession | undefined) ?? null;
 }
 
-export async function fetchStudents(): Promise<StudentRow[]> {
-  const { data, error } = await supabase
-    .from("students")
-    .select("id, reg_no, full_name")
-    .order("reg_no");
+export async function fetchStudents(classSection?: string): Promise<StudentRow[]> {
+  let query = supabase.from("students").select("id, reg_no, full_name");
+  if (classSection) query = query.eq("class_section", classSection);
+  const { data, error } = await query.order("reg_no");
   if (error) throw error;
   return data ?? [];
 }

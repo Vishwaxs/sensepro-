@@ -2,7 +2,7 @@
 scripted marker clip, and the gaze-filter ON/OFF comparison with scripted
 head pitch — proving the FP-reduction measurement without video or models."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import cv2
 import numpy as np
@@ -61,7 +61,7 @@ def test_presence_metrics_on_synthetic_clip() -> None:
 
 class ScriptedPipeline:
     """Eval only needs process_frame + last_tracks. Head pitch is scripted by
-    time: level while the phone is truly out, writing posture afterwards."""
+    time: level initially, then a normal downward writing posture."""
 
     def __init__(self) -> None:
         self.last_tracks: list[Track] = []
@@ -79,24 +79,23 @@ def _eval_engine(filter_on: bool) -> ProctorEngine:
         suppressor=GazeSuppressor(window_s=10.0, pitch_down_deg=-25.0 if filter_on else -1e9),
         writer=NoopWriter(),
         session_id="eval",
-        session_start=datetime.now(timezone.utc),
+        session_start=datetime.now(UTC),
         cooldown_s=0.0,  # eval counts every candidate
     )
 
 
-def test_gaze_filter_measurably_cuts_false_positives() -> None:
-    # A phone marker sits in frame the whole clip; truth says it was really
-    # out only for the first 0.45s. From 0.5s the student is writing.
+def test_writing_posture_does_not_hide_temporally_confirmed_phone() -> None:
+    # A real phone remains visible while the student moves into a downward
+    # writing posture. The first sample arms two-frame confirmation; posture
+    # must not erase the independent physical-object evidence after that.
     frames = [(_phone_frame(), i / 5) for i in range(11)]  # ts 0.0 .. 2.0
-    truth = {"phone_windows": [[0.0, 0.45]]}
+    truth = {"phone_windows": [[0.0, 2.0]]}
 
     on = eval_proctor(frames, ScriptedPipeline(), _eval_engine(True), truth)
     off = eval_proctor(frames, ScriptedPipeline(), _eval_engine(False), truth)
 
-    assert on.tp == off.tp == 3  # ts 0.0, 0.2, 0.4 — real phone, level head
-    assert off.fp == 8  # every writing-posture frame flags without the filter
-    assert on.fp == 0  # the filter suppresses all of them
-    assert fp_reduction(off, on) == 1.0
+    assert on.tp == off.tp == 10  # every sample after temporal warm-up
+    assert on.fp == off.fp == 0
 
 
 def test_fp_reduction_guards_zero_division() -> None:

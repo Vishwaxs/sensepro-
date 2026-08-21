@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { Loader2, QrCode, RefreshCw, X } from "lucide-react";
-import { supabase } from "@/lib/supabase/client";
-import { API_BASE, claimBase } from "@/lib/api";
+import { API_BASE, authHeader, claimBase } from "@/lib/api";
 
 /**
  * Teacher-side absentee verification window. Mints a rotating, single-use token
@@ -25,21 +24,25 @@ export function AbsenteeQR({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const fetching = useRef(false);
+  // Backoff state for failed mints. Without it, a failure leaves `deadline` at
+  // 0, so the rotate check below (`left <= 8`) is true on every tick and the
+  // panel hammers /v1/qr/token once a second for as long as the teacher leaves
+  // the screen open — during a class, against a backend that is also running
+  // the capture pipeline.
+  const failures = useRef(0);
+  const retryAfter = useRef(0);
 
   const fetchToken = useCallback(async () => {
     if (fetching.current) return;
     fetching.current = true;
     setError(null);
     try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (!session) throw new Error("Not authenticated");
+      const headers = await authHeader();
       const resp = await fetch(`${apiBase}/v1/qr/token`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${session.access_token}`,
+          ...headers,
         },
         body: JSON.stringify({ session_id: sessionId }),
       });
@@ -47,7 +50,13 @@ export function AbsenteeQR({
       if (!resp.ok) throw new Error(body.detail || `HTTP ${resp.status}`);
       setToken(body.token);
       setDeadline(Date.now() + body.ttl_s * 1000);
+      failures.current = 0;
+      retryAfter.current = 0;
     } catch (err) {
+      failures.current += 1;
+      // 2s, 4s, 8s … capped at 30s.
+      const waitMs = Math.min(30_000, 2000 * 2 ** (failures.current - 1));
+      retryAfter.current = Date.now() + waitMs;
       setError(err instanceof Error ? err.message : "Could not open the window");
     } finally {
       setLoading(false);
@@ -65,26 +74,25 @@ export function AbsenteeQR({
     const id = window.setInterval(() => {
       const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
       setRemaining(left);
-      if (left <= 8) void fetchToken();
+      if (Date.now() < retryAfter.current) return; // backing off after a failure
+      // deadline === 0 means "no token yet" (first mint failed). Retry on the
+      // backoff schedule rather than every second.
+      if (deadline === 0 || left <= 8) void fetchToken();
     }, 1000);
     return () => window.clearInterval(id);
   }, [deadline, fetchToken]);
 
   const close = useCallback(async () => {
     try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (session) {
-        await fetch(`${apiBase}/v1/qr/close`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${session.access_token}`,
-          },
-          body: JSON.stringify({ session_id: sessionId }),
-        });
-      }
+      const headers = await authHeader();
+      await fetch(`${apiBase}/v1/qr/close`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...headers,
+        },
+        body: JSON.stringify({ session_id: sessionId }),
+      });
     } catch {
       /* best-effort; closing the panel is what matters to the operator */
     } finally {

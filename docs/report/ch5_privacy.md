@@ -73,7 +73,7 @@ When a student requests data deletion:
 
 ## 5.7 Honest Limitations
 
-- **Spoofing:** Face recognition is spoofable (printed photos, screens). This is why it's not the auth gate. The §18 roadmap includes liveness detection.
+- **Spoofing:** Face recognition is spoofable (printed photos, screens). This is why it's not the auth gate. The Section18 roadmap includes liveness detection.
 - **Distance:** Recognition accuracy degrades beyond ~6m. The eval harness measures this honestly.
 - **Coverage:** Not all students in a zone may be visible to the camera. Coverage is always disclosed.
 - **Bias:** ArcFace has known demographic performance variations. We do not claim equal accuracy across all demographics and flag this as a limitation.

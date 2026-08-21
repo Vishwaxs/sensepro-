@@ -33,7 +33,10 @@ class TrackSignals:
 
     attending: bool | None  # head not pitched down past the attention band
     head_down: bool | None
-    phone_nearby: bool
+    # None means no object-detector pass was run for this frame. This is
+    # materially different from False (the detector ran and saw no phone), so
+    # keep the distinction all the way through aggregation and the live UI.
+    phone_nearby: bool | None
     still: bool | None  # None on first sighting (no prior position)
 
 
@@ -54,18 +57,22 @@ class SignalExtractor:
     def extract(
         self,
         tracks: list[Track],
-        phone_dets: list[ObjectDetection],
+        phone_dets: list[ObjectDetection] | None,
         frame_hw: tuple[int, int],
     ) -> dict[int, TrackSignals]:
         h, w = frame_hw
         still_limit = self._still_frac * (h * h + w * w) ** 0.5
-        phone_tracks = {
-            t.track_id
-            for det in phone_dets
-            if (t := ProctorEngine._nearest_track(det, tracks)) is not None
-        }
+        phone_tracks: set[int] = set()
+        if phone_dets is not None:
+            phone_tracks = {
+                t.track_id
+                for det in phone_dets
+                if (t := ProctorEngine._nearest_track(det, tracks)) is not None
+            }
         out: dict[int, TrackSignals] = {}
+        active_ids: set[int] = set()
         for tr in tracks:
+            active_ids.add(tr.track_id)
             pitch = estimate_pitch_deg(tr.det)
             head_down = None if pitch is None else pitch <= self._attend_pitch
             cx, cy = _centre(tr)
@@ -78,7 +85,17 @@ class SignalExtractor:
             out[tr.track_id] = TrackSignals(
                 attending=None if head_down is None else not head_down,
                 head_down=head_down,
-                phone_nearby=tr.track_id in phone_tracks,
+                phone_nearby=None if phone_dets is None else tr.track_id in phone_tracks,
                 still=still,
             )
+        # Tracker ids are monotonic for one session, but a long workshop can
+        # still see many transient detections. Retain movement history only for
+        # tracks that are currently alive; a returning/re-detected person then
+        # honestly gets an unobserved first movement sample instead of being
+        # compared with a stale box from minutes ago.
+        self._last_centre = {
+            track_id: centre
+            for track_id, centre in self._last_centre.items()
+            if track_id in active_ids
+        }
         return out

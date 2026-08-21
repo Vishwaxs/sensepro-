@@ -24,10 +24,17 @@ function ClickSparkRaw({
   duration = 400,
 }: ClickSparkProps) {
   const ref = useRef<HTMLDivElement>(null);
+  const layerRef = useRef<HTMLDivElement>(null);
 
   const handleClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
-      const container = ref.current;
+      // Sparks go into their OWN absolutely-positioned overlay, never into the
+      // wrapper that also holds page content. Appending/removing nodes as a
+      // direct sibling of a WebGL canvas container (this wraps the login page,
+      // which renders <Lightfall/>) dirtied layout on every click. The overlay
+      // is `position:absolute` + `contain:strict`, so spark mutations cannot
+      // reflow anything outside it.
+      const container = layerRef.current;
       if (!container) return;
 
       const rect = container.getBoundingClientRect();
@@ -70,8 +77,14 @@ function ClickSparkRaw({
   );
 
   return (
-    <div ref={ref} onClick={handleClick} className="relative" style={{ position: "relative" }}>
+    <div ref={ref} onClick={handleClick} className="relative">
       {children}
+      <div
+        ref={layerRef}
+        aria-hidden
+        className="pointer-events-none absolute inset-0 z-[9999] overflow-hidden"
+        style={{ contain: "strict" }}
+      />
     </div>
   );
 }

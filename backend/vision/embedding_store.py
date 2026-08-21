@@ -26,7 +26,21 @@ class EmbeddingStore:
     def match(self, vec: np.ndarray) -> tuple[str | None, float]:
         if self._mat is None or not len(self._ids):
             return None, 0.0
-        sims = self._mat @ _l2(vec).astype(np.float32)
+        probe = _l2(vec).astype(np.float32)
+        # A probe of the wrong width means the running vision backend is not the
+        # one the gallery was enrolled with (classically: the 64-dim stub against
+        # a 512-dim ArcFace gallery). Left to numpy this surfaces as an opaque
+        # "matmul: core dimension mismatch" from inside the capture WebSocket,
+        # which kills the socket; say what is actually wrong instead.
+        if probe.shape[0] != self._mat.shape[1]:
+            raise ValueError(
+                f"Embedding dimension mismatch: probe is {probe.shape[0]}-dim but the "
+                f"enrolled gallery is {self._mat.shape[1]}-dim. The running VISION_BACKEND "
+                f"does not match the one used to enrol these students "
+                f"(stub embeddings are 64-dim, InsightFace/ArcFace are 512-dim). "
+                f"Set VISION_BACKEND=insightface and restart the backend."
+            )
+        sims = self._mat @ probe
         i = int(np.argmax(sims))
         score = float(sims[i])
         return (self._ids[i], score) if score >= self.threshold else (None, score)

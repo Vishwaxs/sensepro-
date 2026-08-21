@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
 import {
   ResponsiveContainer,
   LineChart,
@@ -11,24 +12,16 @@ import {
   Area,
 } from "recharts";
 import { guardRoute } from "@/lib/auth-guard";
+import { fetchTrendSeries } from "@/lib/data/live";
+import type { TrendPoint } from "@/lib/data/live";
+import { GaugeCircle, WifiOff } from "lucide-react";
 
 export const Route = createFileRoute("/_shell/trends")({
-  beforeLoad: guardRoute(["management", "admin"]),
+  beforeLoad: guardRoute(["management"]),
   head: () => ({
     meta: [{ title: "Trends · SensePro+" }, { name: "robots", content: "noindex" }],
   }),
   component: TrendsPage,
-});
-
-const days = Array.from({ length: 14 }, (_, i) => {
-  const d = new Date();
-  d.setDate(d.getDate() - (13 - i));
-  return {
-    d: `${d.getDate()}/${d.getMonth() + 1}`,
-    vnei: 0.62 + Math.sin(i / 2) * 0.08 + i * 0.008,
-    attendance: 0.85 + Math.cos(i / 3) * 0.05,
-    coverage: 0.72 + Math.sin(i / 4) * 0.1,
-  };
 });
 
 const tooltipStyle = {
@@ -40,114 +33,160 @@ const tooltipStyle = {
 } as const;
 
 function TrendsPage() {
+  const [load, setLoad] = useState<"loading" | "ready" | "error">("loading");
+  const [days, setDays] = useState<TrendPoint[]>([]);
+
+  useEffect(() => {
+    let mounted = true;
+    fetchTrendSeries(14, "workshop")
+      .then((points) => {
+        if (mounted) {
+          setDays(points);
+          setLoad("ready");
+        }
+      })
+      .catch(() => {
+        if (mounted) setLoad("error");
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const hasVnei = days.some((d) => d.vnei !== null);
+  const hasCoverage = days.some((d) => d.coverage !== null);
+
   return (
     <div className="space-y-6">
       <header>
         <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--muted)]">
-          § 14 days
+          Section 14 days
         </div>
         <h2 className="mt-1 font-display text-2xl font-extrabold tracking-tight text-[color:var(--ink)]">
           Aggregate trends
         </h2>
         <p className="mt-1 text-sm text-[color:var(--muted)]">
-          Class-level attendance, VNEI, and camera coverage over the last two weeks. Never per
+          Class-level workshop engagement and camera coverage over the last two weeks. Never per
           student, never emotion.
         </p>
       </header>
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <ChartCard title="VNEI (class weighted)" color="var(--primary)">
-          <ResponsiveContainer>
-            <LineChart data={days} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-              <CartesianGrid stroke="var(--line)" strokeDasharray="3 4" vertical={false} />
-              <XAxis
-                dataKey="d"
-                stroke="var(--muted)"
-                tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }}
-              />
-              <YAxis
-                stroke="var(--muted)"
-                tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }}
-                domain={[0.4, 0.9]}
-              />
-              <Tooltip contentStyle={tooltipStyle} />
-              <Line
-                type="monotone"
-                dataKey="vnei"
-                stroke="var(--primary)"
-                strokeWidth={2.5}
-                dot={{ r: 3, fill: "var(--primary)" }}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </ChartCard>
-
-        <ChartCard title="Attendance rate" color="var(--ok)">
-          <ResponsiveContainer>
-            <AreaChart data={days} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-              <defs>
-                <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="var(--ok)" stopOpacity={0.35} />
-                  <stop offset="100%" stopColor="var(--ok)" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid stroke="var(--line)" strokeDasharray="3 4" vertical={false} />
-              <XAxis
-                dataKey="d"
-                stroke="var(--muted)"
-                tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }}
-              />
-              <YAxis
-                stroke="var(--muted)"
-                tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }}
-                domain={[0.7, 1]}
-              />
-              <Tooltip contentStyle={tooltipStyle} />
-              <Area dataKey="attendance" stroke="var(--ok)" strokeWidth={2} fill="url(#g1)" />
-            </AreaChart>
-          </ResponsiveContainer>
-        </ChartCard>
-
-        <ChartCard title="Camera coverage" color="var(--accent)">
-          <ResponsiveContainer>
-            <LineChart data={days} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-              <CartesianGrid stroke="var(--line)" strokeDasharray="3 4" vertical={false} />
-              <XAxis
-                dataKey="d"
-                stroke="var(--muted)"
-                tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }}
-              />
-              <YAxis
-                stroke="var(--muted)"
-                tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }}
-                domain={[0.5, 1]}
-              />
-              <Tooltip contentStyle={tooltipStyle} />
-              <Line
-                type="monotone"
-                dataKey="coverage"
-                stroke="var(--accent)"
-                strokeWidth={2.5}
-                dot={{ r: 3, fill: "var(--accent)" }}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </ChartCard>
-
-        <div className="glass-panel p-6">
-          <div className="font-mono-nums text-[10px] uppercase tracking-[0.22em] text-[color:var(--muted)]">
-            § notes
-          </div>
-          <h3 className="mt-1 font-display text-xl font-extrabold tracking-tight text-[color:var(--ink)]">
-            What "coverage" means
-          </h3>
-          <p className="mt-3 text-sm leading-relaxed text-[color:var(--muted)]">
-            Coverage is the fraction of enrolled, consented students the classroom camera can
-            actually see during a session. When it drops below 70%, VNEI carries a caution badge —
-            the model refuses to pretend it sees what it doesn't.
-          </p>
+      {load === "loading" ? (
+        <div className="glass-panel grid h-56 place-items-center font-mono text-[12.5px] text-[color:var(--muted)]">
+          loading…
         </div>
-      </div>
+      ) : load === "error" ? (
+        <div className="glass-panel flex flex-col items-center justify-center gap-2 py-16 text-center text-[color:var(--muted)]">
+          <WifiOff className="h-8 w-8 opacity-50" />
+          <div className="font-display text-lg font-medium text-[color:var(--ink)]">
+            Could not load trend data
+          </div>
+          <p className="text-sm">Check your connection and role, then refresh.</p>
+        </div>
+      ) : days.length === 0 ? (
+        <div className="glass-panel flex flex-col items-center justify-center gap-2 py-16 text-center text-[color:var(--muted)]">
+          <GaugeCircle className="h-8 w-8 opacity-50" />
+          <div className="font-display text-lg font-medium text-[color:var(--ink)]">
+            No sessions in the last 14 days
+          </div>
+          <p className="text-sm">Trends appear once at least one session has run and ended.</p>
+        </div>
+      ) : (
+        <div className="grid gap-6 lg:grid-cols-2">
+          <ChartCard title="Workshop VNEI" color="var(--primary)">
+            {!hasVnei ? (
+              <NoVneiNote />
+            ) : (
+              <ResponsiveContainer>
+                <LineChart data={days} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                  <CartesianGrid stroke="var(--line)" strokeDasharray="3 4" vertical={false} />
+                  <XAxis
+                    dataKey="label"
+                    stroke="var(--muted)"
+                    tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }}
+                  />
+                  <YAxis
+                    stroke="var(--muted)"
+                    tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }}
+                    domain={[0, 1]}
+                  />
+                  <Tooltip contentStyle={tooltipStyle} />
+                  <Line
+                    type="monotone"
+                    dataKey="vnei"
+                    stroke="var(--primary)"
+                    strokeWidth={2.5}
+                    dot={{ r: 3, fill: "var(--primary)" }}
+                    connectNulls
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
+          </ChartCard>
+
+          <ChartCard title="Observable camera coverage" color="var(--ok)">
+            {!hasCoverage ? (
+              <div className="grid h-full place-items-center text-center text-sm text-[color:var(--muted)]">
+                No reportable workshop coverage yet.
+              </div>
+            ) : (
+              <ResponsiveContainer>
+                <AreaChart data={days} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="var(--ok)" stopOpacity={0.35} />
+                      <stop offset="100%" stopColor="var(--ok)" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke="var(--line)" strokeDasharray="3 4" vertical={false} />
+                  <XAxis
+                    dataKey="label"
+                    stroke="var(--muted)"
+                    tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }}
+                  />
+                  <YAxis
+                    stroke="var(--muted)"
+                    tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }}
+                    domain={[0, 1]}
+                  />
+                  <Tooltip contentStyle={tooltipStyle} />
+                  <Area
+                    dataKey="coverage"
+                    stroke="var(--ok)"
+                    strokeWidth={2}
+                    fill="url(#g1)"
+                    connectNulls
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            )}
+          </ChartCard>
+
+          <div className="glass-panel p-6">
+            <div className="font-mono-nums text-[10px] uppercase tracking-[0.22em] text-[color:var(--muted)]">
+              Section notes
+            </div>
+            <h3 className="mt-1 font-display text-xl font-extrabold tracking-tight text-[color:var(--ink)]">
+              What "coverage" means
+            </h3>
+            <p className="mt-3 text-sm leading-relaxed text-[color:var(--muted)]">
+              Coverage is the fraction of enrolled, consented students the classroom camera can
+              actually see during a session. A day with no engagement windows recorded shows a gap
+              in the VNEI line rather than an invented value — the model refuses to pretend it sees
+              what it doesn't.
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NoVneiNote() {
+  return (
+    <div className="grid h-full place-items-center text-center text-sm text-[color:var(--muted)]">
+      No VNEI recorded yet — workshop engagement appears only after privacy and pose-observability
+      requirements are met.
     </div>
   );
 }

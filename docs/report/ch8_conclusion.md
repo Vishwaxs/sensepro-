@@ -14,7 +14,7 @@ SensePro+ demonstrates that a privacy-preserving, camera-based classroom attenda
 
 **Key limitation:** The system has been validated in a single-classroom setting with [TODO: N] enrolled students. Recognition accuracy degrades at distances beyond ~6m, and camera coverage is inherently uneven across zones.
 
-## 8.2 Future Work (§18 Roadmap)
+## 8.2 Future Work (Section18 Roadmap)
 
 The following features are explicitly deferred to Phase 5 to maintain the current system's stability and integrity:
 

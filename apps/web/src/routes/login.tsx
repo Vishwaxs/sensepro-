@@ -1,15 +1,18 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { motion, AnimatePresence } from "framer-motion";
-import { useState } from "react";
+import { motion } from "framer-motion";
+import { useState, useEffect } from "react";
 import { Command, Fingerprint } from "lucide-react";
-import { supabase } from "@/lib/supabase/client";
-import { toast } from "sonner";
-import { GlowBorder, ShimmerButton, ClickSpark, ThemeToggle, Lightfall } from "@/components/fx";
+import { SignIn, SignUp, useUser } from "@clerk/clerk-react";
+import { GlowBorder, ClickSpark, ThemeToggle, Lightfall } from "@/components/fx";
 import { useTheme } from "@/lib/theme";
 import { homeForRole } from "@/lib/auth-guard";
 import type { AppRole } from "@/lib/auth-guard";
 
 export const Route = createFileRoute("/login")({
+  validateSearch: (s: Record<string, unknown>): { redirect?: string } => {
+    const r = s.redirect;
+    return typeof r === "string" && r.startsWith("/") && !r.startsWith("//") ? { redirect: r } : {};
+  },
   head: () => ({
     meta: [{ title: "Sign in · SensePro+" }],
   }),
@@ -18,85 +21,42 @@ export const Route = createFileRoute("/login")({
 
 function LoginPage() {
   const nav = useNavigate();
+  const { redirect: returnTo } = Route.useSearch();
   const { theme } = useTheme();
   const isDark = theme === "dark";
-  const [email, setEmail] = useState("");
-  const [pwd, setPwd] = useState("");
-  const [name, setName] = useState("");
-  const [busy, setBusy] = useState(false);
+  const { isSignedIn, isLoaded, user } = useUser();
   const [mode, setMode] = useState<"signin" | "signup">("signin");
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!email || !pwd) return;
-    setBusy(true);
-
-    try {
-      if (mode === "signup") {
-        const { error } = await supabase.auth.signUp({
-          email,
-          password: pwd,
-          options: { data: { full_name: name } },
-        });
-        if (error) throw error;
-        toast.success("Account created. Check your email to confirm.");
-      } else {
-        const { data, error } = await supabase.auth.signInWithPassword({ email, password: pwd });
-        if (error) throw error;
-        // Decode app_role from the JWT or query user_roles
-        let role: AppRole | null = null;
-        if (data.session?.access_token) {
-          try {
-            const payload = data.session.access_token.split(".")[1];
-            const base64 = payload.replace(/-/g, "+").replace(/_/g, "/");
-            const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), "=");
-            const claims = JSON.parse(atob(padded));
-            role = (claims.app_role as AppRole) ?? null;
-          } catch {
-            /* fallback */
-          }
-        }
-
-        if (!role && data.user?.id) {
-          try {
-            const { data: roleRow } = await supabase
-              .from("user_roles")
-              .select("app_role")
-              .eq("user_id", data.user.id)
-              .maybeSingle();
-            if (roleRow?.app_role) role = roleRow.app_role as AppRole;
-          } catch {
-            /* fallback */
-          }
-        }
-
-        const target = homeForRole(role);
-        toast.success(`Welcome back! Entering console...`);
-        nav({ to: target });
-        return;
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes("placeholder") || msg.includes("fetch")) {
-        toast.info("Demo mode — Supabase not configured. Redirecting to console.");
-        nav({ to: "/teacher" });
-        return;
-      }
-      if (msg.includes("rate limit")) {
-        toast.error(
-          "Email rate limit reached. Disable 'Confirm email' in Supabase Dashboard or sign in with an existing account.",
-        );
-        return;
-      }
-      toast.error(msg || "Authentication failed");
-    } finally {
-      setBusy(false);
+  useEffect(() => {
+    if (isLoaded && isSignedIn && user) {
+      const role = ((user.publicMetadata?.role as AppRole) ||
+        (user.unsafeMetadata?.role as AppRole) ||
+        "teacher") as AppRole;
+      const target = returnTo || homeForRole(role) || "/teacher";
+      nav({ to: target });
     }
+  }, [isLoaded, isSignedIn, user, returnTo, nav]);
+
+  // If already signed in and redirecting, render a clean loading spinner instead of the login box
+  if (isLoaded && isSignedIn) {
+    return (
+      <div className="app-bg grain-overlay relative flex min-h-screen items-center justify-center">
+        <div className="flex flex-col items-center gap-3">
+          <div className="h-6 w-6 animate-spin rounded-full border-2 border-[color:var(--primary)] border-t-transparent" />
+          <span className="font-mono-nums text-xs uppercase tracking-widest text-[color:var(--muted)]">
+            Authenticating...
+          </span>
+        </div>
+      </div>
+    );
   }
+
+  // Where to land after auth completes (OAuth or password)
+  const afterAuthUrl = returnTo || "/teacher";
 
   return (
     <ClickSpark sparkColor="#F59E0B" sparkCount={8} sparkRadius={18}>
-      <div className="app-bg grain-overlay relative flex min-h-screen items-center justify-center overflow-hidden px-6">
+      <div className="app-bg grain-overlay relative flex min-h-screen items-center justify-center overflow-hidden px-6 py-12">
         {/* Theme Toggle */}
         <div className="absolute top-6 right-6 z-50">
           <ThemeToggle className="bg-transparent border-transparent hover:bg-[color:var(--surface-2)] hover:border-[color:var(--line)]" />
@@ -106,22 +66,25 @@ function LoginPage() {
         <div className="absolute inset-0 -z-30">
           <Lightfall
             dpr={1}
-            colors={isDark ? ["#F59E0B", "#D97706", "#10B981"] : ["#B45309", "#92400E", "#059669"]}
-            backgroundColor={isDark ? "#07070A" : "#F8F6F1"}
+            colors={
+              isDark
+                ? ["#F59E0B", "#D97706", "#10B981"]
+                : ["#D97706", "#EA580C", "#B45309", "#059669", "#0D9488"]
+            }
+            backgroundColor={isDark ? "#07070A" : "#000000"}
             speed={0.3}
             streakCount={2}
-            streakWidth={0.6}
+            streakWidth={isDark ? 0.6 : 0.9}
             streakLength={1}
-            glow={isDark ? 0.6 : 0.4}
+            glow={isDark ? 0.6 : 1.2}
             density={0.4}
             twinkle={0.5}
             zoom={3}
-            backgroundGlow={isDark ? 0.2 : 0.1}
-            opacity={isDark ? 0.45 : 0.25}
+            backgroundGlow={isDark ? 0.2 : 0.0}
+            opacity={isDark ? 0.45 : 0.45}
             mouseInteraction={true}
-            mouseStrength={isDark ? 0.3 : 0.2}
+            mouseStrength={isDark ? 0.3 : 0.3}
             mouseRadius={0.7}
-            mixBlendMode={isDark ? "screen" : "multiply"}
           />
         </div>
 
@@ -141,11 +104,11 @@ function LoginPage() {
           className="relative z-10 w-full max-w-md"
         >
           <GlowBorder className="w-full" color="var(--primary, #F59E0B)" duration={5} radius="20px">
-            <div className="glass-frosted glass-hover rounded-[20px] p-8">
+            <div className="glass-frosted glass-hover rounded-[20px] p-6 sm:p-8 flex flex-col items-center">
               {/* Logo */}
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 w-full mb-6">
                 <div
-                  className="flex h-11 w-11 items-center justify-center rounded-lg animate-pulse-ring"
+                  className="flex h-11 w-11 items-center justify-center rounded-lg animate-pulse-ring shrink-0"
                   style={{
                     background: "linear-gradient(135deg, var(--primary-deep), var(--primary))",
                   }}
@@ -162,129 +125,45 @@ function LoginPage() {
                 </div>
               </div>
 
-              {/* Title */}
-              <AnimatePresence mode="wait">
-                <motion.div
-                  key={mode}
-                  initial={{ opacity: 0, x: mode === "signin" ? -16 : 16 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: mode === "signin" ? 16 : -16 }}
-                  transition={{ duration: 0.25 }}
+              {/* Clerk Sign In / Sign Up Component — path routing lets Clerk
+                  own the full OAuth redirect lifecycle (no hash fragments that
+                  break the shared-dev Google callback). */}
+              <div className="w-full flex justify-center">
+                {mode === "signin" ? (
+                  <SignIn
+                    fallbackRedirectUrl={afterAuthUrl}
+                    forceRedirectUrl={afterAuthUrl}
+                    signUpUrl="/login"
+                  />
+                ) : (
+                  <SignUp
+                    fallbackRedirectUrl={afterAuthUrl}
+                    forceRedirectUrl={afterAuthUrl}
+                    signInUrl="/login"
+                  />
+                )}
+              </div>
+
+              {/* Footer */}
+              <div className="flex items-center justify-between w-full pt-4 mt-4 border-t border-[color:var(--line)] text-[color:var(--muted)]">
+                <button
+                  type="button"
+                  onClick={() => setMode(mode === "signin" ? "signup" : "signin")}
+                  className="font-mono-nums text-[11px] uppercase tracking-[0.16em] text-[color:var(--primary)] transition-colors hover:text-[color:var(--ink)]"
                 >
-                  <h1 className="mt-8 font-display text-3xl font-extrabold tracking-tight text-[color:var(--ink)]">
-                    {mode === "signin" ? "Sign in" : "Create account"}
-                  </h1>
-                  <p className="mt-1 text-sm text-[color:var(--muted)]">
-                    {mode === "signin"
-                      ? "Faculty & staff console. Student devices sign in via campus SSO."
-                      : "Register with your campus email. Your admin will assign roles after verification."}
-                  </p>
-                </motion.div>
-              </AnimatePresence>
-
-              {/* Form */}
-              <form onSubmit={handleSubmit} className="mt-6 space-y-4">
-                <AnimatePresence>
-                  {mode === "signup" && (
-                    <motion.div
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: "auto" }}
-                      exit={{ opacity: 0, height: 0 }}
-                      transition={{ duration: 0.3 }}
-                    >
-                      <Field label="Full name">
-                        <input
-                          type="text"
-                          value={name}
-                          onChange={(e) => setName(e.target.value)}
-                          placeholder="Dr. R. Rao"
-                          className="input-field"
-                          autoComplete="name"
-                        />
-                      </Field>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-
-                <Field label="Email">
-                  <input
-                    type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="you@campus"
-                    className="input-field"
-                    autoComplete="email"
-                  />
-                </Field>
-
-                <Field label="Password">
-                  <input
-                    type="password"
-                    value={pwd}
-                    onChange={(e) => setPwd(e.target.value)}
-                    placeholder="••••••••"
-                    className="input-field"
-                    autoComplete={mode === "signup" ? "new-password" : "current-password"}
-                  />
-                </Field>
-
-                <ShimmerButton type="submit" disabled={busy} className="h-12 w-full text-sm">
-                  {busy ? "Verifying…" : mode === "signin" ? "Enter console" : "Create account"}
-                </ShimmerButton>
-
-                <div className="flex items-center justify-between pt-2">
-                  <button
-                    type="button"
-                    onClick={() => setMode(mode === "signin" ? "signup" : "signin")}
-                    className="font-mono-nums text-[10px] uppercase tracking-[0.16em] text-[color:var(--primary)] transition-colors hover:text-[color:var(--ink)]"
-                  >
-                    {mode === "signin" ? "Create an account" : "Already have an account? Sign in"}
-                  </button>
-                  <div className="flex items-center gap-1 text-[color:var(--muted)]">
-                    <Fingerprint className="h-3 w-3" />
-                    <span className="font-mono-nums text-[10px] uppercase tracking-[0.18em]">
-                      DPDP
-                    </span>
-                  </div>
+                  {mode === "signin" ? "Create an account" : "Sign in instead"}
+                </button>
+                <div className="flex items-center gap-1">
+                  <Fingerprint className="h-3 w-3" />
+                  <span className="font-mono-nums text-[10px] uppercase tracking-[0.18em]">
+                    Clerk · Secured
+                  </span>
                 </div>
-              </form>
+              </div>
             </div>
           </GlowBorder>
         </motion.div>
-
-        <style>{`
-          .input-field {
-            width: 100%;
-            height: 48px;
-            padding: 0 14px;
-            border-radius: 10px;
-            background: color-mix(in oklab, var(--surface) 80%, transparent);
-            border: 1px solid var(--line);
-            color: var(--ink);
-            font-family: var(--font-mono);
-            font-size: 13px;
-            outline: none;
-            transition: border-color .2s ease, box-shadow .2s ease;
-          }
-          .input-field::placeholder { color: var(--muted); }
-          .input-field:focus {
-            border-color: var(--primary);
-            box-shadow: 0 0 0 3px var(--primary-glow),
-                        0 0 20px var(--primary-glow);
-          }
-        `}</style>
       </div>
     </ClickSpark>
-  );
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="block">
-      <div className="mb-1.5 font-mono-nums text-[10px] uppercase tracking-[0.18em] text-[color:var(--muted)]">
-        {label}
-      </div>
-      {children}
-    </label>
   );
 }

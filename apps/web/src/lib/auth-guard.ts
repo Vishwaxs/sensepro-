@@ -12,9 +12,16 @@
  */
 
 import { redirect } from "@tanstack/react-router";
-import { supabase } from "@/lib/supabase/client";
+import { supabaseAuth } from "@/lib/supabase/client";
 
 export type AppRole = "teacher" | "management" | "admin" | "student";
+
+/** sessionStorage key holding the post-sign-in destination across an OAuth
+ *  round trip. The provider redirect leaves the app, so the ?redirect= search
+ *  param that guardRoute attaches cannot survive it; /auth/callback reads this
+ *  back. sessionStorage (not localStorage) so it dies with the tab and can
+ *  never redirect a later, unrelated sign-in. */
+export const POST_AUTH_REDIRECT_KEY = "sp:post-auth-redirect";
 
 /** Where each role lands after login or when redirected from a forbidden page. */
 export const ROLE_HOME: Record<AppRole, string> = {
@@ -26,15 +33,17 @@ export const ROLE_HOME: Record<AppRole, string> = {
 
 /** Which roles may access each shell route. */
 export const ROUTE_ROLES: Record<string, AppRole[]> = {
-  "/capture": ["teacher", "admin"],
-  "/teacher": ["teacher", "admin"],
-  "/sessions": ["teacher", "admin"],
-  "/proctor": ["teacher", "admin"],
-  "/management": ["management", "admin"],
-  "/trends": ["management", "admin"],
+  "/start": ["teacher"],
+  "/capture": ["teacher"],
+  "/teacher": ["teacher"],
+  "/sessions": ["teacher"],
+  "/proctor": ["teacher"],
+  "/management": ["management"],
+  "/trends": ["management"],
   "/admin": ["admin"],
   "/enrollment": ["admin"],
-  "/me": ["teacher", "management", "admin", "student"], // any authenticated
+  "/me": ["student"],
+  "/claim": ["student"],
 };
 
 interface AuthResult {
@@ -42,15 +51,59 @@ interface AuthResult {
   authenticated: boolean;
 }
 
-/** Resolve the current user's auth state from the Supabase session JWT or DB. */
+interface ClerkUser {
+  publicMetadata?: { role?: string };
+}
+
+interface ClerkInstance {
+  loaded?: boolean;
+  user?: ClerkUser;
+}
+
+interface ClerkGuardWindow {
+  Clerk?: ClerkInstance;
+}
+
+async function waitForClerk(): Promise<ClerkInstance | null> {
+  if (typeof window === "undefined") return null;
+
+  // Poll for window.Clerk to be attached and initialized
+  const maxWaitMs = 2500;
+  const intervalMs = 30;
+  let waited = 0;
+
+  while (waited < maxWaitMs) {
+    const clerk = (window as unknown as ClerkGuardWindow).Clerk;
+    if (clerk && clerk.loaded) {
+      return clerk;
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+    waited += intervalMs;
+  }
+
+  return (window as unknown as ClerkGuardWindow).Clerk ?? null;
+}
+
+/** Resolve the current user's auth state from Clerk or Supabase. */
 async function resolveAuth(): Promise<AuthResult> {
+  if (typeof window !== "undefined") {
+    const clerk = await waitForClerk();
+    if (clerk?.loaded && clerk.user) {
+      const candidate = clerk.user.publicMetadata?.role;
+      const role =
+        candidate && ["teacher", "management", "admin", "student"].includes(candidate)
+          ? (candidate as AppRole)
+          : null;
+      return { role, authenticated: true };
+    }
+  }
+
   const {
     data: { session },
-  } = await supabase.auth.getSession();
+  } = await supabaseAuth.auth.getSession();
 
   if (!session) return { role: null, authenticated: false };
 
-  // 1. Decode app_role from the signed JWT (injected by the Access Token Hook if enabled)
   let role: AppRole | null = null;
   const payload = session.access_token?.split(".")[1];
   if (payload) {
@@ -64,24 +117,14 @@ async function resolveAuth(): Promise<AuthResult> {
     }
   }
 
-  // 2. If JWT claim not present (hook not enabled in Supabase dashboard), query user_roles table
-  if (!role && session.user?.id) {
-    try {
-      const { data } = await supabase
-        .from("user_roles")
-        .select("app_role")
-        .eq("user_id", session.user.id)
-        .maybeSingle();
-      if (data?.app_role) {
-        role = data.app_role as AppRole;
-      }
-    } catch {
-      /* ignore */
+  if (!role) {
+    const metaRole = (session.user?.user_metadata?.role ||
+      session.user?.app_metadata?.role ||
+      session.user?.app_metadata?.app_role) as AppRole | undefined;
+    if (metaRole && ["teacher", "management", "admin", "student"].includes(metaRole)) {
+      role = metaRole;
     }
   }
-
-  // If neither source provided a role, return null — the guard will redirect
-  // to /no-role with an explanatory message. Never silently default to any role.
 
   return { role, authenticated: true };
 }
@@ -106,7 +149,17 @@ export function guardRoute(allowedRoles: AppRole[] | "authenticated") {
     const { role, authenticated } = await resolveAuth();
 
     if (!authenticated) {
-      throw redirect({ to: "/login" });
+      // Carry the destination through the sign-in round trip. Without this the
+      // QR flow breaks on the most common phone path: iOS Camera opens the link
+      // in Safari and Android Lens in a Chrome Custom Tab, which are often NOT
+      // where the student's session lives, so /claim?token=... bounces to
+      // /login and the token is discarded. They then land on /me with no
+      // explanation, and the token they spent the trip on is single-use and has
+      // already rotated (AbsenteeQR mints a new one about every minute).
+      throw redirect({
+        to: "/login",
+        search: { redirect: window.location.pathname + window.location.search },
+      });
     }
 
     if (!role) {

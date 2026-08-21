@@ -16,8 +16,10 @@ import { Route as ClaimRouteImport } from './routes/claim'
 import { Route as CaptureRouteImport } from './routes/capture'
 import { Route as ShellRouteImport } from './routes/_shell'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AuthCallbackRouteImport } from './routes/auth.callback'
 import { Route as ShellTrendsRouteImport } from './routes/_shell.trends'
 import { Route as ShellTeacherRouteImport } from './routes/_shell.teacher'
+import { Route as ShellStartRouteImport } from './routes/_shell.start'
 import { Route as ShellSessionsRouteImport } from './routes/_shell.sessions'
 import { Route as ShellProctorRouteImport } from './routes/_shell.proctor'
 import { Route as ShellMeRouteImport } from './routes/_shell.me'
@@ -59,6 +61,11 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthCallbackRoute = AuthCallbackRouteImport.update({
+  id: '/auth/callback',
+  path: '/auth/callback',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ShellTrendsRoute = ShellTrendsRouteImport.update({
   id: '/trends',
   path: '/trends',
@@ -67,6 +74,11 @@ const ShellTrendsRoute = ShellTrendsRouteImport.update({
 const ShellTeacherRoute = ShellTeacherRouteImport.update({
   id: '/teacher',
   path: '/teacher',
+  getParentRoute: () => ShellRoute,
+} as any)
+const ShellStartRoute = ShellStartRouteImport.update({
+  id: '/start',
+  path: '/start',
   getParentRoute: () => ShellRoute,
 } as any)
 const ShellSessionsRoute = ShellSessionsRouteImport.update({
@@ -113,8 +125,10 @@ export interface FileRoutesByFullPath {
   '/me': typeof ShellMeRoute
   '/proctor': typeof ShellProctorRoute
   '/sessions': typeof ShellSessionsRoute
+  '/start': typeof ShellStartRoute
   '/teacher': typeof ShellTeacherRoute
   '/trends': typeof ShellTrendsRoute
+  '/auth/callback': typeof AuthCallbackRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -129,8 +143,10 @@ export interface FileRoutesByTo {
   '/me': typeof ShellMeRoute
   '/proctor': typeof ShellProctorRoute
   '/sessions': typeof ShellSessionsRoute
+  '/start': typeof ShellStartRoute
   '/teacher': typeof ShellTeacherRoute
   '/trends': typeof ShellTrendsRoute
+  '/auth/callback': typeof AuthCallbackRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -147,8 +163,10 @@ export interface FileRoutesById {
   '/_shell/me': typeof ShellMeRoute
   '/_shell/proctor': typeof ShellProctorRoute
   '/_shell/sessions': typeof ShellSessionsRoute
+  '/_shell/start': typeof ShellStartRoute
   '/_shell/teacher': typeof ShellTeacherRoute
   '/_shell/trends': typeof ShellTrendsRoute
+  '/auth/callback': typeof AuthCallbackRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -165,8 +183,10 @@ export interface FileRouteTypes {
     | '/me'
     | '/proctor'
     | '/sessions'
+    | '/start'
     | '/teacher'
     | '/trends'
+    | '/auth/callback'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -181,8 +201,10 @@ export interface FileRouteTypes {
     | '/me'
     | '/proctor'
     | '/sessions'
+    | '/start'
     | '/teacher'
     | '/trends'
+    | '/auth/callback'
   id:
     | '__root__'
     | '/'
@@ -198,8 +220,10 @@ export interface FileRouteTypes {
     | '/_shell/me'
     | '/_shell/proctor'
     | '/_shell/sessions'
+    | '/_shell/start'
     | '/_shell/teacher'
     | '/_shell/trends'
+    | '/auth/callback'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -210,6 +234,7 @@ export interface RootRouteChildren {
   LandingRoute: typeof LandingRoute
   LoginRoute: typeof LoginRoute
   NoRoleRoute: typeof NoRoleRoute
+  AuthCallbackRoute: typeof AuthCallbackRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -263,6 +288,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/auth/callback': {
+      id: '/auth/callback'
+      path: '/auth/callback'
+      fullPath: '/auth/callback'
+      preLoaderRoute: typeof AuthCallbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_shell/trends': {
       id: '/_shell/trends'
       path: '/trends'
@@ -275,6 +307,13 @@ declare module '@tanstack/react-router' {
       path: '/teacher'
       fullPath: '/teacher'
       preLoaderRoute: typeof ShellTeacherRouteImport
+      parentRoute: typeof ShellRoute
+    }
+    '/_shell/start': {
+      id: '/_shell/start'
+      path: '/start'
+      fullPath: '/start'
+      preLoaderRoute: typeof ShellStartRouteImport
       parentRoute: typeof ShellRoute
     }
     '/_shell/sessions': {
@@ -329,6 +368,7 @@ interface ShellRouteChildren {
   ShellMeRoute: typeof ShellMeRoute
   ShellProctorRoute: typeof ShellProctorRoute
   ShellSessionsRoute: typeof ShellSessionsRoute
+  ShellStartRoute: typeof ShellStartRoute
   ShellTeacherRoute: typeof ShellTeacherRoute
   ShellTrendsRoute: typeof ShellTrendsRoute
 }
@@ -340,6 +380,7 @@ const ShellRouteChildren: ShellRouteChildren = {
   ShellMeRoute: ShellMeRoute,
   ShellProctorRoute: ShellProctorRoute,
   ShellSessionsRoute: ShellSessionsRoute,
+  ShellStartRoute: ShellStartRoute,
   ShellTeacherRoute: ShellTeacherRoute,
   ShellTrendsRoute: ShellTrendsRoute,
 }
@@ -354,6 +395,7 @@ const rootRouteChildren: RootRouteChildren = {
   LandingRoute: LandingRoute,
   LoginRoute: LoginRoute,
   NoRoleRoute: NoRoleRoute,
+  AuthCallbackRoute: AuthCallbackRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

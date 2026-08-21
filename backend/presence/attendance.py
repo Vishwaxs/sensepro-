@@ -62,11 +62,7 @@ class CumulativeAttendance:
 
     def attended_ids(self) -> set[str]:
         """All student_ids that have crossed the attendance threshold."""
-        return {
-            sid
-            for sid, rec in self._records.items()
-            if rec.total_sightings >= self.threshold
-        }
+        return {sid for sid, rec in self._records.items() if rec.total_sightings >= self.threshold}
 
     def summary(self) -> list[dict]:
         """Serialisable summary of all records for API/debug output."""

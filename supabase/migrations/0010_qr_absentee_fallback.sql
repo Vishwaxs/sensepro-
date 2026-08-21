@@ -1,4 +1,4 @@
--- Rotating-QR absentee fallback (§18 / Phase-5 design, ch8 §8.2).
+-- Rotating-QR absentee fallback (Section18 / Phase-5 design, ch8 Section8.2).
 --
 -- The QR NEVER marks attendance. It grants a short, single-use permission to
 -- verify BY FACE in the room: a claimed token opens a brief verification window

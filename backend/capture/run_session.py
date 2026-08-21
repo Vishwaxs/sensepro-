@@ -24,7 +24,7 @@ import argparse
 import logging
 import time
 from collections.abc import Callable, Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -34,7 +34,7 @@ from app.config import settings
 from app.store import SessionRecorder, build_writer
 from capture.rtsp_source import RtspSource
 from engagement.signals import SignalExtractor
-from engagement.vnei import ZONES, ZoneAggregator
+from engagement.vnei import ZONES, ZoneAggregator, live_engagement_view
 from proctor.detector import ObjectDetection, build_proctor_detector
 from proctor.engine import ProctorEngine
 from proctor.suppression import GazeSuppressor
@@ -44,6 +44,8 @@ from vision.pipeline import SessionPipeline
 logger = logging.getLogger("sensepro.capture")
 
 FrameObserver = Callable[[np.ndarray, float], None]
+TelemetrySink = Callable[[dict], None]
+SESSION_MODES = frozenset({"lecture", "exam", "workshop"})
 
 
 class FrameSource(Protocol):
@@ -52,6 +54,27 @@ class FrameSource(Protocol):
 
 
 def _load_store() -> EmbeddingStore:
+    """Load Supabase embeddings in production, JSON in offline/dev runs."""
+
+    if settings.supabase_enabled:
+        try:
+            store = EmbeddingStore.from_supabase(
+                settings.supabase_url,
+                settings.supabase_postgrest_key,
+                threshold=settings.cosine_threshold,
+            )
+            if store.roster:
+                return store
+            logger.warning(
+                "Supabase embeddings are empty; RTSP falling back to %s",
+                settings.enrollment_json,
+            )
+        except Exception as exc:  # noqa: BLE001 - keep the camera usable offline
+            logger.warning(
+                "Supabase gallery load failed (%s); RTSP falling back to %s",
+                exc,
+                settings.enrollment_json,
+            )
     path = Path(settings.enrollment_json)
     if path.exists():
         return EmbeddingStore.from_json(path, threshold=settings.cosine_threshold)
@@ -68,6 +91,7 @@ def run_loop(
     clock=time.monotonic,
     sleep=time.sleep,
     max_frames: int | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> int:
     """Sample the newest frame at sample_fps and drive the pipeline.
 
@@ -83,7 +107,9 @@ def run_loop(
     last_frame_ts: float | None = None
     processed = 0
     try:
-        while max_frames is None or processed < max_frames:
+        while (max_frames is None or processed < max_frames) and not (
+            should_stop is not None and should_stop()
+        ):
             tick = clock()
             got = source.latest()
             if got is not None:
@@ -126,14 +152,32 @@ def build_observers(
     session_id: str,
     session_start: datetime,
     enrolled_by_zone: dict[str, int],
+    *,
+    telemetry_sink: TelemetrySink | None = None,
 ) -> tuple[list[FrameObserver], ZoneAggregator]:
-    """Exam mode adds the proctor engine; engagement aggregates in both modes.
-    One detector pass per sampled frame serves both consumers — in lecture
-    mode there is no object detector, so phone signals are simply absent."""
+    """Build mode-aware observers for one capture session.
+
+    Exam adds review-only proctoring. Workshop shares the detector only for
+    engagement evidence; lecture keeps its existing attendance path and marks
+    phone evidence unavailable because no object-detector pass runs.
+    """
+    if mode not in SESSION_MODES:
+        raise ValueError(f"unsupported session mode: {mode}")
+
     engine = None
-    if mode == "exam":
+    object_detector = None
+    detector_error: str | None = None
+    if mode in {"exam", "workshop"}:
+        # The detector factory owns process-level model caching. Call it once
+        # and share the returned instance with every observer in this session.
+        try:
+            object_detector = build_proctor_detector()
+        except Exception as exc:
+            detector_error = f"{type(exc).__name__}: object detector unavailable"
+            logger.exception("%s object detector failed to initialise", mode)
+    if mode == "exam" and object_detector is not None:
         engine = ProctorEngine(
-            detector=build_proctor_detector(),
+            detector=object_detector,
             suppressor=GazeSuppressor(
                 window_s=settings.gaze_window_s,
                 pitch_down_deg=settings.gaze_pitch_down_deg,
@@ -156,13 +200,127 @@ def build_observers(
 
     def frame_observer(frame: np.ndarray, rel_ts: float) -> None:
         tracks = pipeline.last_tracks
-        phone_dets: list[ObjectDetection] = []
+        phone_dets: list[ObjectDetection] | None = None
+        detections: list[ObjectDetection] = []
+        written: list = []
+        detection_available = object_detector is not None
         if engine is not None:
-            dets = engine.detector.detect(frame)
-            engine.observe(frame, tracks, rel_ts, detections=dets)
-            phone_dets = [d for d in dets if d.label == "cell phone"]
+            try:
+                detections = engine.detector.detect(frame)
+                written = engine.observe(frame, tracks, rel_ts, detections=detections)
+                accepted = getattr(engine, "confirmed_detections", detections)
+                phone_dets = [d for d in accepted if d.label == "cell phone"]
+            except Exception as exc:  # noqa: BLE001 - preserve pose telemetry
+                logger.warning("exam object detection unavailable for frame: %s", exc)
+                detection_available = False
+                written = engine.observe(frame, tracks, rel_ts, detections=[])
+        elif object_detector is not None:
+            try:
+                detections = object_detector.detect(frame)
+                phone_dets = [d for d in detections if d.label == "cell phone"]
+            except Exception as exc:  # noqa: BLE001 - optional signal, not the session
+                # None means unavailable; [] means measured and clear.
+                logger.warning("workshop object detection unavailable for frame: %s", exc)
+                detection_available = False
         signals = extractor.extract(tracks, phone_dets, frame.shape[:2])
-        aggregator.observe([(t, signals[t.track_id]) for t in tracks], frame.shape[0], rel_ts)
+        emitted = aggregator.observe(
+            [(track, signals[track.track_id]) for track in tracks],
+            frame.shape[0],
+            rel_ts,
+        )
+        if telemetry_sink is not None:
+            engagement = live_engagement_view(signals, aggregator, rel_ts)
+            if object_detector is not None:
+                metadata = object_detector.metadata
+                engagement["phone_detector"] = {
+                    "backend": metadata.backend_name,
+                    "ready": metadata.ready and detection_available,
+                    "production": metadata.production,
+                }
+            elif mode in {"exam", "workshop"}:
+                engagement["phone_detector"] = {
+                    "backend": None,
+                    "ready": False,
+                    "production": False,
+                    "error": detector_error,
+                }
+            view: dict = {
+                "type": "rtsp_telemetry",
+                "ts": rel_ts,
+                "engagement": engagement,
+                "reported_zones": [row.zone for row in emitted],
+            }
+            if mode == "exam":
+                if engine is None:
+                    view["proctor"] = {
+                        "detections": [],
+                        "flags": [],
+                        "backend": None,
+                        "ready": False,
+                        "poses": [],
+                        "error": detector_error,
+                    }
+                    telemetry_sink(view)
+                    return
+                confirmed = getattr(engine, "confirmed_detections", detections)
+                poses = getattr(engine, "pose_observations", {})
+                metadata = engine.detector.metadata
+                view["proctor"] = {
+                    "detections": [
+                        {
+                            "label": detection.label,
+                            "box": list(detection.box),
+                            "confidence": detection.confidence,
+                            "student_id": (
+                                track.student_id
+                                if (
+                                    track := ProctorEngine._nearest_track(
+                                        detection,
+                                        tracks,
+                                    )
+                                )
+                                is not None
+                                else None
+                            ),
+                        }
+                        for detection in confirmed
+                    ],
+                    "flags": [
+                        {
+                            "id": flag.id,
+                            "flag_type": flag.flag_type,
+                            "student_id": flag.student_id,
+                            "flagged_at": flag.flagged_at.isoformat(),
+                        }
+                        for flag in written
+                    ],
+                    "backend": metadata.backend_name,
+                    "ready": metadata.ready and detection_available,
+                    "poses": [
+                        {
+                            "track_id": track_id,
+                            "student_id": next(
+                                (
+                                    track.student_id
+                                    for track in tracks
+                                    if track.track_id == track_id
+                                ),
+                                None,
+                            ),
+                            "yaw": pose.yaw_deg,
+                            "pitch": pose.pitch_deg,
+                            "state": (
+                                "sustained_away"
+                                if pose.sustained
+                                else "away"
+                                if pose.is_away
+                                else "neutral"
+                            ),
+                        }
+                        for track_id, pose in poses.items()
+                    ],
+                }
+            telemetry_sink(view)
 
     return [frame_observer], aggregator
 
@@ -174,7 +332,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--rtsp", default="", help="RTSP URL (default: RTSP_URL from env)")
     parser.add_argument("--session", required=True, help="class_sessions id to attach to")
-    parser.add_argument("--mode", choices=("lecture", "exam"), default="lecture")
+    parser.add_argument("--mode", choices=tuple(sorted(SESSION_MODES)), default="lecture")
     parser.add_argument(
         "--max-seconds", type=float, default=None, help="stop after ~N seconds (default: Ctrl+C)"
     )
@@ -199,8 +357,12 @@ def main(argv: list[str] | None = None) -> None:
         attendance_threshold=settings.attendance_sighting_threshold,
     )
     writer = build_writer()
-    session_start = datetime.now(timezone.utc)
-    recorder = SessionRecorder(writer=writer, session_id=args.session, session_start=session_start)
+    session_start = datetime.now(UTC)
+    recorder = (
+        SessionRecorder(writer=writer, session_id=args.session, session_start=session_start)
+        if args.mode == "lecture"
+        else None
+    )
     observers, aggregator = build_observers(
         mode=args.mode,
         pipeline=pipeline,

@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { motion } from "framer-motion";
+import { motion, type Variants } from "framer-motion";
 import { ShieldCheck, Eye, Brain, Lock, ChevronRight, ArrowRight, Zap } from "lucide-react";
 import {
   SpotlightCard,
@@ -95,7 +95,9 @@ const stagger = {
   hidden: {},
   visible: { transition: { staggerChildren: 0.1 } },
 };
-const fadeUp = {
+// Annotated so the cubic-bezier literal is contextually typed as framer-motion's
+// 4-tuple Easing rather than a plain number[].
+const fadeUp: Variants = {
   hidden: { opacity: 0, y: 24 },
   visible: { opacity: 1, y: 0, transition: { duration: 0.5, ease: [0.25, 0.46, 0.45, 0.94] } },
 };
@@ -111,22 +113,25 @@ function LandingPage() {
         <div className="absolute inset-0 -z-30">
           <Lightfall
             dpr={1}
-            colors={isDark ? ["#F59E0B", "#D97706", "#10B981"] : ["#B45309", "#92400E", "#059669"]}
-            backgroundColor={isDark ? "#07070A" : "#F8F6F1"}
+            colors={
+              isDark
+                ? ["#F59E0B", "#D97706", "#10B981"]
+                : ["#D97706", "#EA580C", "#B45309", "#059669", "#0D9488"]
+            }
+            backgroundColor={isDark ? "#07070A" : "#000000"}
             speed={0.4}
-            streakCount={isDark ? 3 : 2}
-            streakWidth={isDark ? 0.8 : 0.6}
-            streakLength={1.2}
-            glow={isDark ? 0.8 : 0.5}
+            streakCount={3}
+            streakWidth={isDark ? 0.8 : 1.1}
+            streakLength={isDark ? 1.2 : 1.4}
+            glow={isDark ? 0.8 : 1.35}
             density={0.5}
             twinkle={0.6}
             zoom={3}
-            backgroundGlow={isDark ? 0.3 : 0.15}
-            opacity={isDark ? 0.6 : 0.35}
+            backgroundGlow={isDark ? 0.3 : 0.0}
+            opacity={isDark ? 0.65 : 0.55}
             mouseInteraction={true}
-            mouseStrength={isDark ? 0.4 : 0.25}
+            mouseStrength={isDark ? 0.4 : 0.35}
             mouseRadius={0.8}
-            mixBlendMode={isDark ? "screen" : "multiply"}
           />
         </div>
 
@@ -193,7 +198,7 @@ function LandingPage() {
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, delay: 1 }}
-            className="mt-6 max-w-lg text-[15px] leading-relaxed text-[color:var(--muted)]"
+            className="mt-6 max-w-xl text-[16px] leading-relaxed text-[color:var(--ink-2)]"
           >
             Browser-based face recognition for attendance and exam proctoring — built with
             visibility-normalised engagement and privacy invariants baked in.

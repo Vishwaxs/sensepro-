@@ -1,44 +1,56 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  ResponsiveContainer,
   LineChart,
   Line,
   XAxis,
   YAxis,
-  ResponsiveContainer,
   Tooltip,
   CartesianGrid,
 } from "recharts";
-import { mockSessions, mockVneiTrend, mockZones } from "@/lib/data/mock";
 import { ZoneStrip } from "@/components/charts/ZoneStrip";
 import { cn } from "@/lib/utils";
-import type { ZoneAggregate } from "@/lib/data/types";
+import type { ZoneAggregate, Zone } from "@/lib/data/types";
 import { fetchActiveSession } from "@/lib/data/roster";
 import type { ActiveSession } from "@/lib/data/roster";
-import { fetchZoneAggregates } from "@/lib/data/engagement";
+import { fetchZoneAggregates, latestWindow } from "@/lib/data/engagement";
 import type { ZoneAggregateRow } from "@/lib/data/engagement";
+import { fetchManagementSessions } from "@/lib/data/live";
+import type { ManagementSessionRow } from "@/lib/data/live";
 import { VneiPanel } from "@/components/charts/VneiPanel";
 import { WifiOff, GaugeCircle } from "lucide-react";
 import { guardRoute } from "@/lib/auth-guard";
 
 export const Route = createFileRoute("/_shell/management")({
-  beforeLoad: guardRoute(["management", "admin"]),
+  beforeLoad: guardRoute(["management"]),
   head: () => ({
     meta: [{ title: "Management · SensePro+" }],
   }),
   component: ManagementPage,
 });
 
+const ZONES: Zone[] = ["front", "mid", "back"];
+
 function ManagementPage() {
   const [load, setLoad] = useState<"loading" | "ready" | "error">("loading");
   const [session, setSession] = useState<ActiveSession | null>(null);
   const [rows, setRows] = useState<ZoneAggregateRow[]>([]);
+  const [sessions, setSessions] = useState<ManagementSessionRow[]>([]);
+  const [compareA, setCompareA] = useState("");
+  const [compareB, setCompareB] = useState("");
 
   const refresh = useCallback(async () => {
     try {
-      const active = await fetchActiveSession();
+      const [active, mgmtSessions] = await Promise.all([
+        fetchActiveSession("workshop"),
+        fetchManagementSessions(8, "workshop"),
+      ]);
       setSession(active);
       setRows(active ? await fetchZoneAggregates(active.id) : []);
+      setSessions(mgmtSessions);
+      setCompareA((prev) => prev || (mgmtSessions[0]?.id ?? ""));
+      setCompareB((prev) => prev || (mgmtSessions[1]?.id ?? ""));
       setLoad("ready");
     } catch {
       setLoad("error");
@@ -47,49 +59,59 @@ function ManagementPage() {
 
   useEffect(() => {
     void refresh();
+    const interval = window.setInterval(() => void refresh(), 5000);
+    return () => window.clearInterval(interval);
   }, [refresh]);
 
-  const trend = useMemo(() => mockVneiTrend(), []);
-  const zones = useMemo(() => mockZones(), []);
-  const biasZones: ZoneAggregate[] = useMemo(
+  const { byZone } = useMemo(() => latestWindow(rows), [rows]);
+  const coverageZones: ZoneAggregate[] = useMemo(
     () =>
-      zones.map((z) => ({
-        ...z,
-        naive_mean: z.naive_mean ?? z.vnei * (0.9 + Math.random() * 0.2),
-        n_visible: z.n_visible ?? z.n_tracked,
-        suppressed: z.n_tracked < 5,
-      })),
-    [zones],
+      ZONES.map((zone) => {
+        const row = byZone.get(zone);
+        return row
+          ? {
+              zone,
+              vnei: row.vnei,
+              naive_mean: row.vnei, // unused by ZoneStrip's rendering; no naive-vs-fair baseline is computed here
+              coverage: row.coverage,
+              n_tracked: row.n_tracked,
+              n_visible: row.n_tracked,
+              suppressed: false,
+            }
+          : {
+              zone,
+              vnei: 0,
+              naive_mean: 0,
+              coverage: 0,
+              n_tracked: 0,
+              n_visible: 0,
+              suppressed: true,
+            };
+      }),
+    [byZone],
   );
-  const sessions = useMemo(() => mockSessions(), []);
-  const [compareA, setCompareA] = useState(sessions[0]?.id ?? "");
-  const [compareB, setCompareB] = useState(sessions[1]?.id ?? "");
+
+  const trend = useMemo(
+    () =>
+      sessions
+        .filter((s) => s.vnei !== null)
+        .slice()
+        .reverse()
+        .map((s) => ({ session: s.id.slice(0, 8), vnei: s.vnei as number })),
+    [sessions],
+  );
 
   return (
     <div className="space-y-8">
-      {/* Sample data notice */}
-      <div className="rounded-md border border-dashed border-[color:var(--warn)]/50 bg-[color:var(--warn)]/5 px-4 py-3">
-        <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--warn)]">
-          ⚠ Sample data sections
-        </div>
-        <p className="mt-1 text-xs text-[color:var(--muted)]">
-          The following sections use sample data for demonstration: <strong>VNEI Trend</strong>,{" "}
-          <strong>Zone Engagement</strong>,<strong>Camera Coverage</strong>, and{" "}
-          <strong>Session Compare</strong>. The <strong>VNEI by zone (Live)</strong> panel reads
-          real data from the active session.
-        </p>
-      </div>
-
-      {/* VNEI trend — SAMPLE DATA */}
-      <section className="glass-panel relative p-6">
-        <SampleBadge />
+      {/* VNEI trend across recent sessions */}
+      <section className="glass-panel p-6">
         <header className="flex items-center justify-between">
           <div>
             <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--muted)]">
-              Class engagement · VNEI
+              Workshop engagement · VNEI
             </div>
             <div className="mt-0.5 font-display text-xl font-extrabold tracking-tight text-[color:var(--ink)]">
-              Trend across sessions
+              Workshop trend across sessions
             </div>
           </div>
           <div className="font-mono-nums text-[11px] text-[color:var(--muted)]">
@@ -97,45 +119,58 @@ function ManagementPage() {
           </div>
         </header>
         <div className="mt-4 h-[260px]">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={trend} margin={{ top: 10, right: 12, left: -10, bottom: 0 }}>
-              <defs>
-                <linearGradient id="vneiG" x1="0" x2="1">
-                  <stop offset="0%" stopColor="#F59E0B" />
-                  <stop offset="100%" stopColor="#10B981" />
-                </linearGradient>
-              </defs>
-              <CartesianGrid stroke="rgba(255,255,255,0.06)" strokeDasharray="2 4" />
-              <XAxis
-                dataKey="session"
-                stroke="#6B6B78"
-                tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }}
-              />
-              <YAxis
-                domain={[0, 1]}
-                stroke="#6B6B78"
-                tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }}
-              />
-              <Tooltip
-                contentStyle={{
-                  background: "#151519",
-                  border: "1px solid rgba(255,255,255,0.06)",
-                  borderRadius: 8,
-                  fontFamily: "IBM Plex Mono",
-                  fontSize: 12,
-                }}
-                labelStyle={{ color: "#6B6B78" }}
-              />
-              <Line
-                type="monotone"
-                dataKey="vnei"
-                stroke="url(#vneiG)"
-                strokeWidth={2.5}
-                dot={{ fill: "#F59E0B", r: 3 }}
-                activeDot={{ r: 5, fill: "#10B981" }}
-              />
-            </LineChart>
-          </ResponsiveContainer>
+          {load === "loading" ? (
+            <div className="grid h-full place-items-center font-mono text-[12.5px] text-[color:var(--muted)]">
+              loading…
+            </div>
+          ) : trend.length === 0 ? (
+            <div className="grid h-full place-items-center text-center text-[color:var(--muted)]">
+              <div>
+                <GaugeCircle className="mx-auto mb-3 h-8 w-8 opacity-50" />
+                <p className="text-sm">No completed workshops with reportable engagement yet.</p>
+              </div>
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={trend} margin={{ top: 10, right: 12, left: -10, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="vneiG" x1="0" x2="1">
+                    <stop offset="0%" stopColor="#F59E0B" />
+                    <stop offset="100%" stopColor="#10B981" />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid stroke="rgba(255,255,255,0.06)" strokeDasharray="2 4" />
+                <XAxis
+                  dataKey="session"
+                  stroke="#6B6B78"
+                  tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }}
+                />
+                <YAxis
+                  domain={[0, 1]}
+                  stroke="#6B6B78"
+                  tick={{ fontFamily: "IBM Plex Mono", fontSize: 11 }}
+                />
+                <Tooltip
+                  contentStyle={{
+                    background: "#151519",
+                    border: "1px solid rgba(255,255,255,0.06)",
+                    borderRadius: 8,
+                    fontFamily: "IBM Plex Mono",
+                    fontSize: 12,
+                  }}
+                  labelStyle={{ color: "#6B6B78" }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="vnei"
+                  stroke="url(#vneiG)"
+                  strokeWidth={2.5}
+                  dot={{ fill: "#F59E0B", r: 3 }}
+                  activeDot={{ r: 5, fill: "#10B981" }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
         </div>
       </section>
 
@@ -170,7 +205,7 @@ function ManagementPage() {
             <div className="flex flex-col items-center justify-center py-12 text-[color:var(--muted)]">
               <GaugeCircle className="mb-4 h-8 w-8 opacity-50" />
               <div className="font-display text-lg font-medium text-[color:var(--ink)]">
-                {session ? "No windows recorded yet" : "No live session"}
+                {session ? "No windows recorded yet" : "No live workshop"}
               </div>
               <p className="mt-1 text-sm">
                 Zone aggregates appear once a session runs with at least 5 tracked faces in a zone.
@@ -182,25 +217,29 @@ function ManagementPage() {
         </div>
       </section>
 
-      {/* ZoneStrip — camera coverage distribution — SAMPLE DATA */}
-      <section className="glass-panel relative p-6">
-        <SampleBadge />
+      {/* Camera coverage — same live zone window as the panel above */}
+      <section className="glass-panel p-6">
         <header>
           <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--muted)]">
             Camera coverage
           </div>
           <div className="mt-0.5 font-display text-xl font-extrabold tracking-tight text-[color:var(--ink)]">
-            Visible students by zone
+            Visible participants by zone
           </div>
         </header>
         <div className="mt-4">
-          <ZoneStrip zones={biasZones} />
+          {rows.length === 0 ? (
+            <p className="py-4 font-mono-nums text-xs text-[color:var(--muted)]">
+              No live session data yet.
+            </p>
+          ) : (
+            <ZoneStrip zones={coverageZones} />
+          )}
         </div>
       </section>
 
-      {/* Zones — SAMPLE DATA */}
-      <section className="glass-panel relative p-6">
-        <SampleBadge />
+      {/* Zones — same live zone window as the panel above, larger card layout */}
+      <section className="glass-panel p-6">
         <header className="flex items-center justify-between">
           <div>
             <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--muted)]">
@@ -223,30 +262,29 @@ function ManagementPage() {
           <LegendSwatch tone="ok" label="≥ 70% · reportable" />
           <LegendSwatch tone="warn" label="50–69% · caution" />
           <LegendSwatch tone="lowconf" label="< 50% · low-confidence (hatched)" />
-          <LegendSwatch tone="suppressed" label="k < 5 tracked · suppressed" />
+          <LegendSwatch tone="suppressed" label="No reportable row · withheld" />
           <div className="ml-auto font-mono-nums text-[10px] text-[color:var(--muted)]">
             coverage = tracked ÷ enrolled in zone
           </div>
         </div>
 
         <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
-          {zones.map((z) => {
-            const suppressed = z.n_tracked < 5;
-            const lowConf = !suppressed && z.coverage < 0.5;
+          {coverageZones.map((z) => {
+            const lowConf = !z.suppressed && z.coverage < 0.5;
             const pct = Math.round(z.vnei * 100);
             return (
               <div
                 key={z.zone}
                 aria-label={
-                  suppressed
-                    ? `Zone ${z.zone} suppressed, fewer than 5 tracked`
+                  z.suppressed
+                    ? `Zone ${z.zone} withheld, no reportable aggregate`
                     : lowConf
                       ? `Zone ${z.zone} low confidence, coverage ${Math.round(z.coverage * 100)} percent`
                       : `Zone ${z.zone} VNEI ${pct} of 100`
                 }
                 className={cn(
                   "relative overflow-hidden rounded-lg border p-5",
-                  suppressed
+                  z.suppressed
                     ? "border-dashed border-[color:var(--muted)]/50 bg-[color:var(--surface-2)]/30"
                     : lowConf
                       ? "border-[color:var(--warn)]/50 bg-[color:var(--surface-2)]/40"
@@ -265,32 +303,32 @@ function ManagementPage() {
                   <div className="font-mono-nums text-[11px] uppercase tracking-[0.22em] text-[color:var(--muted)]">
                     Zone · {z.zone}
                   </div>
-                  <span
-                    className={cn(
-                      "rounded-md border px-2 py-0.5 font-mono-nums text-[10px] uppercase tracking-wider",
-                      suppressed
-                        ? "border-[color:var(--muted)]/40 bg-[color:var(--surface)] text-[color:var(--muted)]"
-                        : z.coverage >= 0.7
+                  {!z.suppressed && (
+                    <span
+                      className={cn(
+                        "rounded-md border px-2 py-0.5 font-mono-nums text-[10px] uppercase tracking-wider",
+                        z.coverage >= 0.7
                           ? "border-[color:var(--ok)]/40 bg-[color:var(--ok)]/10 text-[color:var(--ok)]"
                           : z.coverage >= 0.5
                             ? "border-[color:var(--warn)]/40 bg-[color:var(--warn)]/10 text-[color:var(--warn)]"
                             : "border-[color:var(--warn)]/50 bg-[color:var(--warn)]/15 text-[color:var(--warn)]",
-                    )}
-                  >
-                    coverage {Math.round(z.coverage * 100)}%
-                  </span>
+                      )}
+                    >
+                      coverage {Math.round(z.coverage * 100)}%
+                    </span>
+                  )}
                 </div>
 
-                {suppressed ? (
+                {z.suppressed ? (
                   <div className="mt-4 flex h-[112px] flex-col items-center justify-center rounded-md border border-dashed border-[color:var(--muted)]/50 bg-[color:var(--surface)]/40 text-center">
                     <div className="font-mono-nums text-[10px] uppercase tracking-[0.24em] text-[color:var(--muted)]">
-                      suppressed
+                      withheld
                     </div>
                     <div className="mt-1 font-display text-2xl font-extrabold tracking-tight text-[color:var(--muted)]">
-                      k &lt; 5
+                      no value
                     </div>
                     <div className="mt-1 font-mono-nums text-[10px] text-[color:var(--muted)]">
-                      too few tracked to report
+                      privacy, observability, or persistence gate
                     </div>
                   </div>
                 ) : lowConf ? (
@@ -334,51 +372,62 @@ function ManagementPage() {
         </div>
       </section>
 
-      {/* Session compare — SAMPLE DATA */}
-      <section className="glass-panel relative p-6">
-        <SampleBadge />
+      {/* Session compare */}
+      <section className="glass-panel p-6">
         <header className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--muted)]">
-              Session compare
+              Workshop compare
             </div>
             <div className="mt-0.5 font-display text-xl font-extrabold tracking-tight text-[color:var(--ink)]">
-              Side-by-side aggregates
+              Side-by-side engagement aggregates
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <SessionPick value={compareA} onChange={setCompareA} sessions={sessions} />
-            <span className="font-mono-nums text-xs text-[color:var(--muted)]">vs</span>
-            <SessionPick value={compareB} onChange={setCompareB} sessions={sessions} />
-          </div>
+          {sessions.length >= 2 && (
+            <div className="flex items-center gap-2">
+              <SessionPick value={compareA} onChange={setCompareA} sessions={sessions} />
+              <span className="font-mono-nums text-xs text-[color:var(--muted)]">vs</span>
+              <SessionPick value={compareB} onChange={setCompareB} sessions={sessions} />
+            </div>
+          )}
         </header>
-        <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2">
-          {[compareA, compareB].map((id, i) => {
-            const s = sessions.find((x) => x.id === id);
-            if (!s) return null;
-            return (
-              <div
-                key={i}
-                className="rounded-lg border border-[color:var(--line)] bg-[color:var(--surface-2)]/60 p-5"
-              >
-                <div className="font-mono-nums text-[10px] uppercase tracking-[0.18em] text-[color:var(--muted)]">
-                  {s.id}
+        {sessions.length < 2 ? (
+          <p className="mt-4 font-mono-nums text-xs text-[color:var(--muted)]">
+            Need at least two completed workshops to compare.
+          </p>
+        ) : (
+          <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2">
+            {[compareA, compareB].map((id, i) => {
+              const s = sessions.find((x) => x.id === id);
+              if (!s) return null;
+              return (
+                <div
+                  key={i}
+                  className="rounded-lg border border-[color:var(--line)] bg-[color:var(--surface-2)]/60 p-5"
+                >
+                  <div className="font-mono-nums text-[10px] uppercase tracking-[0.18em] text-[color:var(--muted)]">
+                    {s.id.slice(0, 8)}
+                  </div>
+                  <div className="mt-1 font-display text-lg font-extrabold tracking-tight text-[color:var(--ink)]">
+                    {s.class_name}
+                  </div>
+                  <div className="mt-4 grid grid-cols-3 gap-3">
+                    <MiniStat
+                      label="Coverage"
+                      value={s.coverage !== null ? `${Math.round(s.coverage * 100)}%` : "—"}
+                    />
+                    <MiniStat
+                      label="VNEI"
+                      value={s.vnei !== null ? s.vnei.toFixed(2) : "—"}
+                      accent
+                    />
+                    <MiniStat label="Windows" value={String(s.reportable_windows)} />
+                  </div>
                 </div>
-                <div className="mt-1 font-display text-lg font-extrabold tracking-tight text-[color:var(--ink)]">
-                  {s.class_name}
-                </div>
-                <div className="mt-4 grid grid-cols-3 gap-3">
-                  <MiniStat label="Present" value={`${s.present_count}/${s.total_count}`} />
-                  <MiniStat
-                    label="Attendance"
-                    value={`${Math.round((s.present_count / s.total_count) * 100)}%`}
-                  />
-                  <MiniStat label="VNEI" value={s.vnei.toFixed(2)} accent />
-                </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        )}
       </section>
     </div>
   );
@@ -391,7 +440,7 @@ function SessionPick({
 }: {
   value: string;
   onChange: (v: string) => void;
-  sessions: ReturnType<typeof mockSessions>;
+  sessions: ManagementSessionRow[];
 }) {
   return (
     <select
@@ -401,7 +450,7 @@ function SessionPick({
     >
       {sessions.map((s) => (
         <option key={s.id} value={s.id}>
-          {s.id} · {s.class_name}
+          {s.id.slice(0, 8)} · {s.class_name}
         </option>
       ))}
     </select>
@@ -452,15 +501,6 @@ function LegendSwatch({
     <div className="flex items-center gap-2">
       <span className={cn("inline-block h-3.5 w-6 rounded-sm border", swatch)} style={style} />
       <span className="font-mono-nums text-[11px] text-[color:var(--muted)]">{label}</span>
-    </div>
-  );
-}
-
-/** Amber badge rendered in the top-right of sections that use mock data. */
-function SampleBadge() {
-  return (
-    <div className="absolute top-3 right-3 z-10 rounded-md border border-dashed border-[color:var(--warn)]/60 bg-[color:var(--warn)]/10 px-2.5 py-1 font-mono-nums text-[10px] uppercase tracking-[0.2em] text-[color:var(--warn)]">
-      Sample data — not from this deployment
     </div>
   );
 }

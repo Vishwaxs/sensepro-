@@ -4,14 +4,14 @@ engagement record carries any student or track identifier. Signals are
 transient and derived from landmarks/detections the pipeline already has."""
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from engagement.signals import SignalExtractor, TrackSignals
-from engagement.vnei import ZoneAggregator
+from engagement.vnei import ZoneAggregator, live_engagement_view
 from proctor.detector import ObjectDetection
 from vision.types import Detection, Track
 
-SESSION_START = datetime(2026, 7, 17, 9, 0, tzinfo=timezone.utc)
+SESSION_START = datetime(2026, 7, 17, 9, 0, tzinfo=UTC)
 FRAME_H = 240
 
 
@@ -69,7 +69,7 @@ def test_vnei_and_coverage_arithmetic() -> None:
     assert row.n_tracked == 5
     assert row.vnei == 0.8  # attending / observations of visible tracks
     assert row.coverage == 0.5  # 5 tracked of 10 enrolled in the zone
-    assert row.signals == {"phone_rate": 0.0, "head_down_rate": 0.2, "still_rate": 0.0}
+    assert row.signals == {"phone_rate": 0.0, "head_down_rate": 0.2}
 
 
 def test_zone_below_k_floor_is_suppressed() -> None:
@@ -125,6 +125,7 @@ def test_signal_extractor_phone_nearby() -> None:
     sigs = SignalExtractor().extract([track], [phone], (240, 320))
     assert sigs[1].phone_nearby is True
     assert SignalExtractor().extract([track], [], (240, 320))[1].phone_nearby is False
+    assert SignalExtractor().extract([track], None, (240, 320))[1].phone_nearby is None
 
 
 def test_signal_extractor_stillness_across_frames() -> None:
@@ -135,3 +136,49 @@ def test_signal_extractor_stillness_across_frames() -> None:
     assert same[1].still is True
     moved = ext.extract([_track(1, y_centre=180)], [], (240, 320))  # 20px jump
     assert moved[1].still is False
+
+
+def test_pose_unknown_is_not_persisted_as_invented_vnei() -> None:
+    writer = FakeAggWriter()
+    agg = _aggregator(writer)
+    observations = [(_track(t), _sig(attending=None)) for t in range(1, 6)]
+    agg.observe(observations, FRAME_H, rel_ts=0.0)
+
+    assert agg.flush() == []
+    assert writer.rows == []
+    assert agg.window_status(1.0)["last_window"]["withheld_zones"] == {
+        "front": "insufficient_pose_observations"
+    }
+
+
+def test_live_view_uses_observable_pose_denominator_and_keeps_unknown_phone() -> None:
+    agg = _aggregator(FakeAggWriter())
+    signals = {
+        1: TrackSignals(True, False, None, None),
+        2: TrackSignals(True, False, None, True),
+        3: TrackSignals(False, True, None, False),
+        4: TrackSignals(True, False, None, True),
+        5: TrackSignals(True, False, None, False),
+        6: TrackSignals(None, None, None, None),
+    }
+
+    view = live_engagement_view(signals, agg, rel_ts=2.0)
+
+    assert view["visible"] == 6
+    assert view["observable"] == 5
+    assert view["vnei"] == 0.8
+    assert view["phone"] is None and view["phone_observed"] == 0
+    assert view["still"] == 2 and view["moving"] == 2 and view["still_observed"] == 4
+    assert view["window"]["state"] == "waiting"
+
+
+def test_observed_zone_size_defends_approximate_enrolment_denominator() -> None:
+    writer = FakeAggWriter()
+    agg = _aggregator(writer, enrolled={"front": 3, "mid": 1, "back": 1})
+    agg.observe([(_track(t), _sig()) for t in range(1, 6)], FRAME_H, rel_ts=0.0)
+
+    row = agg.flush()[0]
+
+    assert row.n_tracked == 5
+    assert row.enrolled_in_zone == 5
+    assert row.coverage == 1.0

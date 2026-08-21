@@ -19,8 +19,6 @@ Security:
 
 from __future__ import annotations
 
-import base64
-import json
 import logging
 import os
 import tempfile
@@ -29,6 +27,8 @@ from typing import Any
 import cv2
 import numpy as np
 from fastapi import APIRouter, File, Form, Header, HTTPException, UploadFile
+
+from app import auth as app_auth
 
 logger = logging.getLogger("sensepro.enroll_api")
 router = APIRouter(prefix="/v1/enroll", tags=["enrollment"])
@@ -47,22 +47,10 @@ PRIVACY_NOTE = (
 
 
 async def _verify_admin(authorization: str | None) -> dict[str, Any]:
-    """Verify the caller's Supabase JWT has app_role=admin. Returns the claims."""
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(401, "Missing or invalid Authorization header")
-
-    token = authorization[7:]
-    try:
-        payload = token.split(".")[1]
-        padded = payload + "=" * ((4 - len(payload) % 4) % 4)
-        claims = json.loads(base64.urlsafe_b64decode(padded))
-    except Exception:
-        raise HTTPException(401, "Invalid JWT")
-
-    role = claims.get("app_role")
-    if role != "admin":
-        raise HTTPException(403, f"Admin role required, got: {role}")
-    return claims
+    """Admin only, signature-verified. The previous implementation base64-decoded
+    the JWT payload and trusted its app_role with no fallback at all, so a forged
+    token could enrol an arbitrary face as another student's biometric template."""
+    return app_auth.require_role(authorization, app_auth.ADMIN_ONLY)
 
 
 def _video_duration_s(path: str) -> float:

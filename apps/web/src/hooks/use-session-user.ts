@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { supabase } from "@/lib/supabase/client";
+import { supabaseAuth } from "@/lib/supabase/client";
 import type { Session } from "@supabase/supabase-js";
 
 export interface SessionUser {
@@ -48,7 +48,7 @@ export function useSessionUser() {
   useEffect(() => {
     let mounted = true;
 
-    supabase.auth
+    supabaseAuth.auth
       .getSession()
       .then(({ data }) => {
         if (!mounted) return;
@@ -60,7 +60,7 @@ export function useSessionUser() {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = supabaseAuth.auth.onAuthStateChange((_event, session) => {
       if (mounted) setUser(toSessionUser(session));
     });
 

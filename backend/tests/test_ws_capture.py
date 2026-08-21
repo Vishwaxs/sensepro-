@@ -4,6 +4,7 @@ Proves the browser-capture loop: client sends frames -> server returns faces +
 presence transitions -> session ends cleanly. No ML models required.
 """
 
+from tests.conftest import STAFF_WS_TOKEN
 import base64
 import json
 
@@ -38,7 +39,7 @@ def test_capture_loop_detects_and_marks_present(monkeypatch) -> None:
     monkeypatch.setattr("app.ws._load_store", lambda: EmbeddingStore())
     client = TestClient(app)
     face = _marker_frame()
-    with client.websocket_connect("/ws/capture") as ws:
+    with client.websocket_connect(f"/ws/capture?token={STAFF_WS_TOKEN}") as ws:
         # frame 1: a face is present -> a track appears
         ws.send_json({"type": "frame", "ts": 0.0, "jpg_b64": face})
         r1 = ws.receive_json()
@@ -52,7 +53,7 @@ def test_capture_loop_detects_and_marks_present(monkeypatch) -> None:
 
 def test_bad_frame_is_handled() -> None:
     client = TestClient(app)
-    with client.websocket_connect("/ws/capture") as ws:
+    with client.websocket_connect(f"/ws/capture?token={STAFF_WS_TOKEN}") as ws:
         ws.send_json({"type": "frame", "ts": 0.0, "jpg_b64": "not-base64!!"})
         r = ws.receive_json()
         assert r["type"] == "error"
@@ -92,3 +93,35 @@ def test_load_store_falls_back_to_json_on_supabase_error(tmp_path, monkeypatch) 
 
     store = ws._load_store()
     assert store.roster == {"s1"}
+
+
+def test_capture_socket_rejects_unauthenticated_connection():
+    """/ws/capture is the attendance write path — it must not accept anyone.
+
+    Whatever session_id this socket is handed gets presence rows written, and
+    every frame costs a detector pass plus ArcFace forward passes. It used to
+    call ws.accept() unconditionally, so anyone who could reach the port could
+    mark a class present or simply exhaust the inference budget.
+    """
+    import pytest
+    from starlette.websockets import WebSocketDisconnect
+
+    client = TestClient(app)
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect("/ws/capture") as ws:
+            ws.receive_json()
+    assert exc.value.code == 1008  # policy violation
+
+
+def test_capture_socket_rejects_a_student_token():
+    """Authenticated is not enough — the socket is staff-only."""
+    import pytest
+    from starlette.websockets import WebSocketDisconnect
+
+    from tests.conftest import staff_token
+
+    client = TestClient(app)
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect(f"/ws/capture?token={staff_token('student')}") as ws:
+            ws.receive_json()
+    assert exc.value.code == 1008

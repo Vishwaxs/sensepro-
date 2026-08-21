@@ -4,14 +4,17 @@ without a camera), a fake cv2.VideoCapture proves reconnect-with-backoff, and
 the URL masker never leaks a password. Stub vision backend, zero network."""
 
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import cv2
 import numpy as np
+import pytest
 
+import capture.run_session as run_session_mod
 from app.store import SessionRecorder
 from capture.rtsp_source import RtspSource, mask_rtsp_url
 from capture.run_session import _parse_enrolled, build_observers, run_loop
+from proctor.detector import StubProctorDetector
 from vision.embedding_store import EmbeddingStore
 from vision.pipeline import SessionPipeline
 from vision.stub import StubDetector, StubEmbedder
@@ -91,7 +94,7 @@ def _fake_clock():
 def test_run_loop_drives_presence_writer() -> None:
     fake = FakeWriter()
     recorder = SessionRecorder(
-        writer=fake, session_id="sess-rtsp", session_start=datetime.now(timezone.utc)
+        writer=fake, session_id="sess-rtsp", session_start=datetime.now(UTC)
     )
     pipeline = SessionPipeline(store=_enrolled_store(), reid_interval_s=0.0, miss_threshold=1)
     source = FakeSource([_marker_frame(), _blank_frame()])
@@ -174,14 +177,14 @@ def test_rtsp_source_reconnects_after_read_failure() -> None:
         source.stop()
 
 
-def test_exam_mode_wiring_flags_phone_and_holds_k_floor() -> None:
+def test_exam_mode_wiring_flags_phone_and_holds_k_floor(monkeypatch) -> None:
     """End-to-end runner wiring: exam mode runs the proctor engine off the
     pipeline's tracks (a phone marker gets flagged) and engagement stays
     suppressed below the k-floor — all through run_loop, zero network."""
     writer = FakeWriter()
+    monkeypatch.setattr(run_session_mod, "build_proctor_detector", StubProctorDetector)
     pipeline = SessionPipeline(store=_enrolled_store(), reid_interval_s=0.0, miss_threshold=1)
-    start = datetime.now(timezone.utc)
-    recorder = SessionRecorder(writer=writer, session_id="sess-exam", session_start=start)
+    start = datetime.now(UTC)
     observers, aggregator = build_observers(
         mode="exam",
         pipeline=pipeline,
@@ -196,7 +199,7 @@ def test_exam_mode_wiring_flags_phone_and_holds_k_floor() -> None:
     run_loop(
         FakeSource([frame, frame]),
         pipeline,
-        recorder,
+        None,
         sample_fps=2.0,
         observers=observers,
         clock=_fake_clock(),
@@ -206,7 +209,80 @@ def test_exam_mode_wiring_flags_phone_and_holds_k_floor() -> None:
 
     assert any(f.flag_type == "phone" for f in writer.flags)
     assert all(f.review_status == "pending" for f in writer.flags)  # review-only, always
+    assert writer.events == []  # exam recognition never becomes attendance persistence
     assert aggregator.flush() == [] and writer.aggregates == []  # n<5 -> suppressed
+
+
+def test_workshop_wiring_measures_phone_without_flags_or_presence(monkeypatch) -> None:
+    writer = FakeWriter()
+    monkeypatch.setattr(run_session_mod, "build_proctor_detector", StubProctorDetector)
+    pipeline = SessionPipeline(store=_enrolled_store(), reid_interval_s=0.0, miss_threshold=1)
+    start = datetime.now(UTC)
+    telemetry = []
+    observers, aggregator = build_observers(
+        mode="workshop",
+        pipeline=pipeline,
+        writer=writer,
+        session_id="sess-workshop",
+        session_start=start,
+        enrolled_by_zone={"front": 10, "mid": 10, "back": 10},
+        telemetry_sink=telemetry.append,
+    )
+    frame = _marker_frame()
+    cv2.rectangle(frame, (205, 145), (245, 185), (255, 0, 0), -1)
+
+    run_loop(
+        FakeSource([frame]),
+        pipeline,
+        None,
+        sample_fps=2.0,
+        observers=observers,
+        clock=_fake_clock(),
+        sleep=lambda s: None,
+        max_frames=1,
+    )
+
+    assert writer.events == [] and writer.flags == []
+    assert telemetry[-1]["engagement"]["phone"] == 1
+    assert telemetry[-1]["engagement"]["phone_detector"]["ready"] is True
+    assert "proctor" not in telemetry[-1]
+    assert aggregator.flush() == []
+
+
+def test_run_loop_stop_signal_exits_without_waiting_for_another_frame() -> None:
+    pipeline = SessionPipeline(store=_enrolled_store(), reid_interval_s=0.0, miss_threshold=1)
+    source = FakeSource([_marker_frame()])
+    checks = {"count": 0}
+
+    def should_stop() -> bool:
+        checks["count"] += 1
+        return checks["count"] > 1
+
+    processed = run_loop(
+        source,
+        pipeline,
+        None,
+        sample_fps=2.0,
+        clock=_fake_clock(),
+        sleep=lambda s: None,
+        should_stop=should_stop,
+    )
+
+    assert processed == 1
+    assert source.stopped is True
+
+
+def test_build_observers_rejects_unknown_mode() -> None:
+    pipeline = SessionPipeline(store=EmbeddingStore())
+    with pytest.raises(ValueError, match="unsupported session mode"):
+        build_observers(
+            mode="attendance",
+            pipeline=pipeline,
+            writer=FakeWriter(),
+            session_id="sess-invalid",
+            session_start=datetime.now(UTC),
+            enrolled_by_zone={"front": 1, "mid": 1, "back": 1},
+        )
 
 
 def test_parse_enrolled_even_split_and_explicit_spec() -> None:

@@ -24,7 +24,7 @@ export function KpiCard({
   className,
 }: {
   label: string;
-  value: number;
+  value: number | string;
   suffix?: string;
   hint?: string;
   icon?: ReactNode;
@@ -62,10 +62,16 @@ export function KpiCard({
         {icon ? <div className="text-[color:var(--muted)]">{icon}</div> : null}
       </div>
       <div className="mt-4 flex items-baseline gap-1.5">
-        <CountUp
-          value={value}
-          className="font-display text-[34px] font-extrabold leading-none tracking-tight text-[color:var(--ink)]"
-        />
+        {typeof value === "number" ? (
+          <CountUp
+            value={value}
+            className="font-display text-[34px] font-extrabold leading-none tracking-tight text-[color:var(--ink)]"
+          />
+        ) : (
+          <span className="font-display text-[28px] font-extrabold leading-none tracking-tight text-[color:var(--ink)]">
+            {value}
+          </span>
+        )}
         {suffix ? (
           <span className="font-mono-nums text-[15px] text-[color:var(--muted)]">{suffix}</span>
         ) : null}

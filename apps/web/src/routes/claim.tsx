@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Camera, CheckCircle2, Clock, Loader2, XCircle } from "lucide-react";
 import { guardRoute } from "@/lib/auth-guard";
-import { supabase } from "@/lib/supabase/client";
+import { supabase, supabaseAuth } from "@/lib/supabase/client";
 import { API_BASE } from "@/lib/api";
 
 export const Route = createFileRoute("/claim")({
@@ -43,7 +43,7 @@ function ClaimPage() {
       try {
         const {
           data: { session },
-        } = await supabase.auth.getSession();
+        } = await supabaseAuth.auth.getSession();
         if (!session) throw new Error("Please sign in first, then rescan.");
         const resp = await fetch(`${API_BASE}/v1/qr/claim`, {
           method: "POST",
@@ -150,7 +150,19 @@ function ClaimPage() {
   const captureAndVerify = useCallback(async () => {
     const video = videoRef.current;
     const wid = windowIdRef.current;
-    if (!video || !wid || !video.videoWidth) return;
+    // A silent `return` here was a real failure mode: on a slower phone the
+    // stream has no dimensions for the first moment after permission is
+    // granted, so tapping "Verify me" did precisely nothing — no spinner, no
+    // message — while the student's 30-second window ran out and they tapped
+    // again and again. Say what is happening instead.
+    if (!video || !video.videoWidth) {
+      setNote("Camera is still starting — try again in a second.");
+      return;
+    }
+    if (!wid) {
+      setNote("No open verification window — rescan the code.");
+      return;
+    }
     setSubmitting(true);
     setNote(null);
     try {
@@ -166,7 +178,7 @@ function ClaimPage() {
 
       const {
         data: { session },
-      } = await supabase.auth.getSession();
+      } = await supabaseAuth.auth.getSession();
       if (!session) throw new Error("Session expired — sign in and rescan.");
 
       const form = new FormData();

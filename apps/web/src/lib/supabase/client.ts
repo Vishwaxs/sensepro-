@@ -3,4 +3,4 @@
 // separate createClient calls split auth state across two token stores (and
 // warn "Multiple GoTrueClient instances" in the console), which is why a
 // reviewer's session could fail to match the session RLS evaluates.
-export { supabase } from "@/lib/supabase";
+export { supabase, supabaseAuth } from "@/lib/supabase";
