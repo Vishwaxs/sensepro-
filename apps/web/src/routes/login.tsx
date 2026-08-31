@@ -42,9 +42,16 @@ function LoginPage() {
 
   useEffect(() => {
     if (isLoaded && isSignedIn && user) {
-      const role = ((user.publicMetadata?.role as AppRole) ||
-        (user.unsafeMetadata?.role as AppRole) ||
-        "teacher") as AppRole;
+      const existingRole = (user.publicMetadata?.role || user.unsafeMetadata?.role) as
+        | AppRole
+        | undefined;
+      const role: AppRole = existingRole || "teacher";
+
+      // If no role was set in metadata, set it on unsafeMetadata for persistence
+      if (!existingRole && typeof user.update === "function") {
+        void user.update({ unsafeMetadata: { ...user.unsafeMetadata, role } }).catch(() => {});
+      }
+
       const target = returnTo || homeForRole(role) || "/teacher";
       nav({ to: target });
     }

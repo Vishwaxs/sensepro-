@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.admin_api import router as admin_router
 from app.config import settings
@@ -124,9 +125,11 @@ def healthz() -> dict:
         "vision_backend_configured": wanted,
         "vision_backend_class": loaded,
         "cosine_threshold": settings.cosine_threshold,
+        "clerk_configured": bool(settings.clerk_secret_key),
         "supabase_configured": settings.supabase_enabled,
         "embeddings_count": None,
         "roster_count": None,
+        "session_tables_ready": None,
         "qr_tables_ready": None,
         "engagement_aggregates_ready": None,
         "proctor": proctor_meta,
@@ -154,6 +157,13 @@ def healthz() -> dict:
         out["embeddings_count"] = writer.count_rows("embeddings")
         out["roster_count"] = writer.count_rows("students")
         try:
+            writer.count_rows("class_sessions")
+            writer.count_rows("proctor_flags")
+            out["session_tables_ready"] = True
+        except Exception:  # noqa: BLE001
+            out["session_tables_ready"] = False
+            out["status"] = "degraded"
+        try:
             writer.count_rows("qr_tokens")
             writer.count_rows("verification_windows")
             out["qr_tables_ready"] = True
@@ -172,3 +182,48 @@ def healthz() -> dict:
         if writer is not None:
             writer.close()
     return out
+
+
+@app.get("/readyz")
+def readyz() -> JSONResponse:
+    """Strict deployment gate for model, persistence, and schema readiness.
+
+    ``/health`` remains the inexpensive liveness probe and ``/healthz`` remains
+    a 200-returning diagnostic. Hosts should route traffic only after this
+    endpoint returns 200.
+    """
+    diagnostic = healthz()
+    blockers: list[str] = []
+
+    if diagnostic["vision_backend"] != diagnostic["vision_backend_configured"]:
+        blockers.append("vision_backend_mismatch")
+
+    proctor = diagnostic["proctor"]
+    if not proctor["ready"]:
+        blockers.append("proctor_backend_unavailable")
+    elif settings.proctor_backend.lower() == "yolo" and not proctor["production"]:
+        blockers.append("production_proctor_not_loaded")
+
+    if not diagnostic["supabase_configured"]:
+        blockers.append("persistence_not_configured")
+    elif diagnostic["embeddings_count"] is None or diagnostic["roster_count"] is None:
+        blockers.append("persistence_unreachable")
+
+    required_schema = {
+        "session_tables_ready": "session_schema_unavailable",
+        "engagement_aggregates_ready": "engagement_schema_unavailable",
+        "qr_tables_ready": "attendance_qr_schema_unavailable",
+    }
+    for check, blocker in required_schema.items():
+        if diagnostic[check] is not True:
+            blockers.append(blocker)
+
+    if not diagnostic["clerk_configured"]:
+        blockers.append("clerk_backend_not_configured")
+
+    payload = {
+        "ready": not blockers,
+        "blockers": blockers,
+        "checks": diagnostic,
+    }
+    return JSONResponse(status_code=200 if not blockers else 503, content=payload)

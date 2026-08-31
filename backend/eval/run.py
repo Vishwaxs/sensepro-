@@ -16,8 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.config import settings
-from app.store import NoopWriter
 from eval.harness import (
+    EvaluationWriter,
     eval_presence,
     eval_proctor,
     iter_clip,
@@ -72,7 +72,7 @@ def _engine(filter_on: bool) -> ProctorEngine:
             window_s=settings.gaze_window_s,
             pitch_down_deg=settings.gaze_pitch_down_deg if filter_on else NEVER_DOWN_DEG,
         ),
-        writer=NoopWriter(),  # eval measures, never persists
+        writer=EvaluationWriter(),  # acknowledges in memory; never persists
         session_id="eval",
         session_start=datetime.now(timezone.utc),
         cooldown_s=0.0,  # count every candidate, not the deduped queue

@@ -49,6 +49,9 @@ function ZoneBar({ row }: { row: ZoneAggregateRow | undefined }) {
     );
   }
   const lowConfidence = row.coverage < 0.5;
+  const coverageTone = row.coverage >= 0.7 ? "ok" : "warn";
+  const coverageLabel =
+    row.coverage >= 0.7 ? "strong coverage" : row.coverage >= 0.5 ? "caution" : "low confidence";
   const pct = Math.round(row.vnei * 100);
   return (
     <div>
@@ -59,17 +62,37 @@ function ZoneBar({ row }: { row: ZoneAggregateRow | undefined }) {
       >
         <div
           className="grid h-full place-items-end rounded-lg bg-primary"
-          style={{ width: `${Math.max(pct, 8)}%`, ...(lowConfidence ? HATCH : {}) }}
+          style={{ width: `${pct}%`, ...(lowConfidence ? HATCH : {}) }}
         />
-        <span className="absolute inset-y-0 left-3 grid place-items-center font-mono text-[12px] font-medium text-white">
+        <span className="absolute inset-y-0 left-3 grid place-items-center font-mono text-[12px] font-medium text-white drop-shadow-sm">
           {pct}%
         </span>
       </div>
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-        <Badge tone={lowConfidence ? "warn" : "muted"}>
-          coverage {Math.round(row.coverage * 100)}% · {row.n_tracked}/{row.enrolled_in_zone}
+        <Badge tone={coverageTone}>
+          coverage {Math.round(row.coverage * 100)}% · {coverageLabel}
         </Badge>
-        {lowConfidence ? <Badge tone="warn">LOW CONFIDENCE</Badge> : null}
+        <Badge tone="muted">
+          {row.n_tracked} peak tracks · roster {row.enrolled_in_zone}
+        </Badge>
+      </div>
+      <div className="mt-2 grid grid-cols-3 gap-1.5">
+        <SignalValue label="Head down" value={row.signals.head_down_rate} />
+        <SignalValue label="Device" value={row.signals.phone_rate} />
+        <SignalValue label="Stillness" value={row.signals.still_rate} />
+      </div>
+    </div>
+  );
+}
+
+function SignalValue({ label, value }: { label: string; value: number | undefined }) {
+  return (
+    <div className="rounded-md border border-[color:var(--line)] bg-[color:var(--surface)] px-2 py-1.5">
+      <div className="font-mono-nums text-[9px] uppercase tracking-wider text-[color:var(--muted)]">
+        {label}
+      </div>
+      <div className="mt-0.5 font-mono-nums text-[11px] text-[color:var(--ink)]">
+        {typeof value === "number" ? `${Math.round(value * 100)}%` : "Unavailable"}
       </div>
     </div>
   );
@@ -78,28 +101,65 @@ function ZoneBar({ row }: { row: ZoneAggregateRow | undefined }) {
 function Sparkline({ zone, rows }: { zone: string; rows: ZoneAggregateRow[] }) {
   const W = 200;
   const H = 36;
-  if (rows.length < 2) {
+  const windows = [...new Set(rows.map((row) => row.window_start))].sort();
+  const zoneByWindow = new Map(
+    rows.filter((row) => row.zone === zone).map((row) => [row.window_start, row]),
+  );
+  const reported = windows
+    .map((windowStart, index) => {
+      const row = zoneByWindow.get(windowStart);
+      if (!row) return null;
+      const x = windows.length === 1 ? W / 2 : (index * W) / (windows.length - 1);
+      return { x, y: H - row.vnei * (H - 4) - 2, row };
+    })
+    .filter((point): point is NonNullable<typeof point> => point !== null);
+
+  if (reported.length < 2) {
     return (
       <p className="font-mono text-[11px] text-muted">trend appears after two or more windows</p>
     );
   }
-  const step = W / (rows.length - 1);
-  const points = rows.map((r, i) => `${i * step},${H - r.vnei * (H - 4) - 2}`).join(" ");
-  const last = rows[rows.length - 1];
+
+  const segments: Array<typeof reported> = [];
+  let current: typeof reported = [];
+  for (const windowStart of windows) {
+    const point = reported.find((candidate) => candidate.row.window_start === windowStart);
+    if (point) {
+      current.push(point);
+    } else if (current.length > 0) {
+      segments.push(current);
+      current = [];
+    }
+  }
+  if (current.length > 0) segments.push(current);
+  const last = reported[reported.length - 1];
   return (
     <svg
       viewBox={`0 0 ${W} ${H}`}
       className="h-9 w-full"
       role="img"
-      aria-label={`${zone} VNEI trend across ${rows.length} windows, latest ${Math.round(last.vnei * 100)} percent`}
+      aria-label={`${zone} VNEI reported in ${reported.length} of ${windows.length} retained windows, latest ${Math.round(last.row.vnei * 100)} percent`}
     >
-      <polyline points={points} fill="none" stroke="#3B82F6" strokeWidth={2} />
-      <circle
-        cx={(rows.length - 1) * step}
-        cy={H - last.vnei * (H - 4) - 2}
-        r={2.5}
-        fill="#3B82F6"
-      />
+      {segments.map((segment, index) =>
+        segment.length > 1 ? (
+          <polyline
+            key={index}
+            points={segment.map((point) => `${point.x},${point.y}`).join(" ")}
+            fill="none"
+            stroke="var(--primary)"
+            strokeWidth={2}
+          />
+        ) : null,
+      )}
+      {reported.map((point) => (
+        <circle
+          key={point.row.window_start}
+          cx={point.x}
+          cy={point.y}
+          r={2.25}
+          fill="var(--primary)"
+        />
+      ))}
     </svg>
   );
 }
@@ -120,7 +180,7 @@ export function VneiPanel({ rows }: { rows: ZoneAggregateRow[] }) {
               {zone}
             </span>
             <ZoneBar row={byZone.get(zone)} />
-            <Sparkline zone={zone} rows={rows.filter((r) => r.zone === zone)} />
+            <Sparkline zone={zone} rows={rows} />
           </div>
         ))}
       </div>

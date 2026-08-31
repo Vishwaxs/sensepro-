@@ -1,321 +1,141 @@
-# SensePro+ Deployment Prompt: Vercel Frontend + Render Backend
+# SensePro+ Release Runbook: Vercel + Render
 
-You are deploying SensePro+ to production with the following architecture:
-- **Frontend**: Vercel (React + Vite + TanStack Router)
-- **Backend**: Render (FastAPI + Vision Models)
-- **Database**: Supabase (already configured)
-- **Email**: Resend (already configured)
-- **Auth**: Clerk (already configured)
+Production topology:
 
-## Prerequisites
+- Vercel serves `apps/web` and its Clerk proxy function.
+- Render builds `backend/Dockerfile` and runs the FastAPI inference API.
+- Supabase stores sessions, review events, aggregate windows, and attendance data.
+- Live frames stay in memory and are never persisted.
 
-1. Fork the SensePro+ repository to your GitHub
-2. Have Supabase, Resend, and Clerk accounts ready with API keys
-3. Install required tools:
-   ```bash
-   npm install -g vercel
-   ```
+Use `DEPLOYMENT.md` for the full account setup and security notes. This file is the short
+release-day sequence.
 
-## Step 1: Prepare Environment Variables
+## 1. Preflight the exact worktree
 
-### Backend Secrets (Render)
-Collect these values for later:
-- `ALLOW_ORIGINS`: Will be set to Vercel frontend URL after deployment
-- `SUPABASE_URL`: From Supabase dashboard
-- `SUPABASE_SECRET_KEY`: Rotated service role key (sb_secret_ format)
-- `SUPABASE_SERVICE_ROLE_KEY`: Optional, same as above
-- `RESEND_API_KEY`: From Resend dashboard (re_xxxxx format)
-- `RESEND_FROM_EMAIL`: Your verified domain email
-- `ADMIN_NOTIFY_EMAIL`: Admin email for notifications
-- `CLERK_SECRET_KEY`: From Clerk dashboard (sk_test_xxxxx)
-- `CLERK_PUBLISHABLE_KEY`: From Clerk dashboard (pk_test_xxxxx)
-- `RTSP_URL`: If using RTSP camera (optional)
+From `backend`:
 
-### Frontend Secrets (Vercel)
-Collect these values:
-- `VITE_API_BASE`: Will be https://sensepro-api.onrender.com
-- `VITE_WS_URL`: Will be wss://sensepro-api.onrender.com/ws/capture
-- `VITE_SUPABASE_URL`: From Supabase dashboard
-- `VITE_SUPABASE_ANON_KEY`: From Supabase dashboard (anon key only)
-- `VITE_CLERK_PUBLISHABLE_KEY`: From Clerk dashboard
-- `VITE_CLASS_SECTION`: e.g., MCA-4B
-- `VITE_CLASS_SUBJECT`: e.g., Distributed Systems
-
-## Step 2: Update render.yaml
-
-Remove the frontend service from `render.yaml` since we're deploying it to Vercel.
-
-**Current file has both services. Modify it to only include the backend:**
-
-```yaml
-services:
-  - type: web
-    name: sensepro-api
-    runtime: python
-    plan: standard
-    rootDir: backend
-    buildCommand: >-
-      pip install --upgrade pip &&
-      pip install -e ".[insightface,supabase,proctor]" &&
-      mkdir -p /opt/render/project/.cache/sensepro &&
-      python -c "from ultralytics import YOLO; YOLO('/opt/render/project/.cache/sensepro/yolov8n.pt')" &&
-      python -c "from insightface.app import FaceAnalysis; a=FaceAnalysis(name='buffalo_l'); a.prepare(ctx_id=-1, det_size=(640,640))"
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /health
-    envVars:
-      - key: PYTHON_VERSION
-        value: "3.12.7"
-      - key: VISION_BACKEND
-        value: insightface
-      - key: PROCTOR_BACKEND
-        value: yolo
-      - key: PROCTOR_MODEL_PATH
-        value: /opt/render/project/.cache/sensepro/yolov8n.pt
-      - key: CAPTURE_SEND_WIDTH
-        value: "1920"
-      - key: REID_INTERVAL_S
-        value: "30"
-      - key: ENROLLMENT_JSON
-        value: enrollments.json
-      - key: ENGAGEMENT_WINDOW_S
-        value: "60"
-      - key: ALLOW_ORIGINS
-        sync: false  # Set to Vercel URL after frontend deploy
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_SECRET_KEY
-        sync: false
-      - key: SUPABASE_SERVICE_ROLE_KEY
-        sync: false
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m ruff check app/main.py app/sessions.py app/store.py app/ws.py app/rtsp_api.py proctor engagement eval/harness.py eval/run.py
 ```
 
-**IF YOU GET STUCK HERE**: Open a browser, go to https://dashboard.render.com, and manually create a web service with these settings. The YAML is just a shortcut - you can configure everything in the UI.
+From `apps/web`:
 
-## Step 3: Deploy Backend to Render
+```powershell
+npx tsc --noEmit
+npx eslint src/routes/capture.tsx src/routes/_shell.proctor.tsx src/routes/_shell.teacher.tsx src/routes/_shell.management.tsx src/routes/_shell.trends.tsx src/components/ProctorReviewPanel.tsx src/components/charts/VneiPanel.tsx src/lib/data/engagement.ts scripts/validate-deploy-env.mjs
+npm run build
+```
 
-### Option A: Using Blueprint (Recommended)
-1. Open https://dashboard.render.com/blueprints
-2. Click "New Blueprint Instance"
-3. Connect to your forked GitHub repository
-4. Render will detect `render.yaml`
-5. Review the configuration
-6. Click "Deploy Blueprint"
+Repository-wide lint currently includes unrelated legacy formatting findings. Do not claim
+it is globally clean; the release gate above covers the changed exam, workshop, capture,
+and deployment paths.
 
-### Option B: Manual Setup (If Blueprint Fails)
-1. Go to https://dashboard.render.com
-2. Click "New +" → "Web Service"
-3. Connect your GitHub repository
-4. Configure:
-   - **Name**: sensepro-api
-   - **Runtime**: Python
-   - **Plan**: Standard (2GB RAM - critical for vision models)
-   - **Root Directory**: backend
-   - **Build Command**: (same as in YAML above)
-   - **Start Command**: uvicorn app.main:app --host 0.0.0.0 --port $PORT
-5. Add environment variables from Step 1
-6. Click "Create Web Service"
-
-**IF YOU GET STUCK**: Open browser to Render dashboard and configure manually. The UI is intuitive - just match the settings from the YAML.
-
-## Step 4: Verify Backend Deployment
-
-After deployment completes:
+## 2. Apply and verify Supabase migrations
 
 ```bash
-# Check health endpoint
-curl https://sensepro-api.onrender.com/health
-
-# Check detailed health
-curl https://sensepro-api.onrender.com/healthz
+supabase link --project-ref <project-ref>
+supabase migration list
+supabase db push
 ```
 
-Both should return `{"status": "ok"}`.
+Do not continue if migration numbering is ambiguous or any pending migration fails. For the
+production Clerk instance, assign roles through server-controlled `publicMetadata.role`.
+The Supabase Access Token Hook in `DEPLOYMENT.md` is only for the optional legacy auth fallback.
 
-**IF THIS FAILS**:
-- Check Render logs in dashboard
-- Verify environment variables are set correctly
-- Ensure you're using Standard plan (not free tier)
-- Model downloads can take 5-10 minutes on first deploy
+## 3. Deploy the backend on Render
 
-## Step 5: Deploy Frontend to Vercel
+Create or sync a Blueprint from the repository-root `render.yaml`. It deliberately creates
+only `sensepro-api`; the Vercel frontend needs a serverless Clerk proxy and must not be
+deployed as a plain Render static site.
 
-1. Navigate to the frontend directory:
-   ```bash
-   cd apps/web
-   ```
+The Blueprint fixes these runtime details:
 
-2. Run Vercel CLI:
-   ```bash
-   vercel
-   ```
+- Docker runtime using `backend/Dockerfile`
+- 1 CPU / 2 GB plan (`1c-2g`)
+- one inference worker
+- InsightFace and YOLO model caches warmed at image-build time
+- strict `/readyz` traffic gate
 
-3. Follow the prompts:
-   - **Set up and deploy?** Y
-   - **Which scope?** Select your account
-   - **Link to existing project?** N (first time)
-   - **Project name**: sensepro-web (or your choice)
-   - **Directory**: ./ (current directory)
-   - **Override settings?** N (use defaults)
+Enter every `sync: false` backend value in Render:
 
-4. **IF PROMPTED FOR ENVIRONMENT VARIABLES**:
-   - Vercel will ask about `VITE_*` variables
-   - Enter the values from Step 1
-   - Use the backend URL: https://sensepro-api.onrender.com
-   - Use WebSocket URL: wss://sensepro-api.onrender.com/ws/capture
+- `ALLOW_ORIGINS`: exact Vercel origin, without a trailing slash
+- `FRONTEND_URL`: exact Vercel origin
+- `SUPABASE_URL`
+- `SUPABASE_SECRET_KEY`: server-side `sb_secret_...` key
+- `CLERK_SECRET_KEY`
+- `RESEND_API_KEY`
+- `RESEND_FROM_EMAIL`
+- `ADMIN_NOTIFY_EMAIL`
 
-5. **IF YOU GET STUCK AT LOGIN**:
-   - Open browser to https://vercel.com/login
-   - Login with your GitHub account
-   - After login, return to terminal and press Enter
-   - The CLI will detect your active session
+Never put a Supabase or Clerk server secret in a `VITE_*` variable.
 
-6. After deployment, Vercel will output:
-   - Production URL: https://sensepro-web.vercel.app
-   - Copy this URL for the next step
+## 4. Deploy the frontend on Vercel
 
-**IF VERCEL CLI FAILS**:
-- Open browser to https://vercel.com/new
-- Import your GitHub repository
-- Set root directory to `apps/web`
-- Configure environment variables in project settings
-- Click Deploy
+Import the repository with Root Directory `apps/web`. Keep the committed `vercel.json`; it
+contains the SPA routes, cache headers, Clerk proxy rewrites, and the strict deployment
+build command.
 
-## Step 6: Update Backend CORS
+Set these Vercel variables for Production and Preview as appropriate:
 
-Now that the frontend is deployed, update the backend CORS to allow the Vercel domain:
+- `VITE_API_BASE=https://<render-service>.onrender.com`
+- `VITE_WS_URL=wss://<render-service>.onrender.com/ws/capture`
+- `VITE_SUPABASE_URL=https://<project-ref>.supabase.co`
+- `VITE_SUPABASE_ANON_KEY=<publishable-or-anon-key>`
+- `VITE_CLERK_PUBLISHABLE_KEY=<pk_...>`
+- `VITE_CLERK_PROXY_URL=https://<vercel-app>/__clerk`
+- `CLERK_SECRET_KEY=<sk_...>` as a server-side variable
+- `VITE_CLASS_SECTION=<real-section>`
+- `VITE_CLASS_SUBJECT=<default-subject>`
 
-1. Go to Render dashboard → sensepro-api
-2. Navigate to "Environment"
-3. Find `ALLOW_ORIGINS`
-4. Update value to: `https://sensepro-web.vercel.app`
-5. (Optional) Add localhost for dev: `https://sensepro-web.vercel.app,http://localhost:5173`
-6. Click "Save Changes"
-7. Render will automatically redeploy with new settings
+`npm run build:deploy` fails before Vite builds if the API, WebSocket, Supabase, or Clerk
+contract is missing or unsafe.
 
-**IF YOU GET STUCK**: This is critical - without this, the frontend cannot call the backend due to CORS errors. The setting is in Render dashboard under Environment variables.
+## 5. Post-deploy verification
 
-## Step 7: Create Vercel Configuration (SPA Fallback)
-
-Create `apps/web/vercel.json` for proper SPA routing:
-
-```json
-{
-  "rewrites": [
-    {
-      "source": "/(.*)",
-      "destination": "/_shell.html"
-    }
-  ]
-}
-```
-
-Commit and push this file, then Vercel will auto-deploy.
-
-**IF YOU GET STUCK**: This file ensures client-side routes (like /teacher, /capture) work. Without it, refreshing the page on these routes will show 404.
-
-## Step 8: Final Verification
-
-### Test Frontend
 ```bash
-# Open in browser
-open https://sensepro-web.vercel.app
+API=https://<render-service>.onrender.com
+curl --fail "$API/health"
+curl --fail "$API/healthz"
+curl --fail "$API/readyz"
 ```
 
-### Test Backend Health
+Required `/readyz` result:
+
+- HTTP 200 and `ready: true`
+- active and configured vision backend both `insightface`
+- proctor backend ready and production-backed by YOLO
+- Clerk and Supabase configured
+- session/proctor, workshop aggregate, and lecture QR schemas ready
+
+An unauthenticated request to a protected endpoint must be rejected:
+
 ```bash
-curl https://sensepro-api.onrender.com/health
+curl -o /dev/null -w '%{http_code}\n' -X POST "$API/v1/sessions" \
+  -H 'Content-Type: application/json' \
+  -d '{"class_section":"X","subject":"Y","mode":"exam"}'
 ```
 
-### Test WebSocket Connection
-Open browser console on the frontend and run:
-```javascript
-const ws = new WebSocket('wss://sensepro-api.onrender.com/ws/capture');
-ws.onopen = () => console.log('WebSocket connected');
-ws.onerror = (e) => console.error('WebSocket error:', e);
-```
+Expected status: `401` or `403`, never `200` or `201`.
 
-### Test Email Notification
-```bash
-curl -X POST https://sensepro-api.onrender.com/v1/notifications/test \
-  -H "Content-Type: application/json" \
-  -d '{"to_email": "your@email.com"}'
-```
+Then verify in a real signed-in browser:
 
-### Test End-to-End Flow
-1. Open https://sensepro-web.vercel.app
-2. Sign in via Clerk
-3. Create a session
-4. Navigate to capture page
-5. Verify live roster updates
-6. End session and check email
+1. Teacher login completes and protected routes load without console/network errors.
+2. Exam mode creates a real session, shows no QR or attendance controls, reaches
+   `Proctoring live`, records a staged phone and sustained off-screen head turn as pending
+   review events, and saves dismiss/follow-up decisions without applying a penalty.
+3. Workshop mode shows no participant names, attendance, or QR controls; with at least five
+   pose-observable participants, a complete aggregate window is retained and appears in
+   teacher and management views.
+4. Lecture attendance still starts, records, closes, and opens its QR flow exactly as before.
+5. Ending an exam or workshop receives server confirmation and the exact session appears in
+   history.
 
-## Troubleshooting Guide
+Do not call the deployment ready if any authenticated browser step is untested.
 
-### Backend Deployment Fails
-- **Issue**: Out of memory on model load
-- **Fix**: Ensure Standard plan (2GB RAM), not free tier (512MB)
-- **Check**: Render dashboard → plan settings
+## 6. Rollback
 
-### WebSocket Connection Fails
-- **Issue**: Mixed content error
-- **Fix**: Ensure `VITE_WS_URL` uses `wss://` not `ws://`
-- **Check**: Frontend environment variables in Vercel
-
-### CORS Errors
-- **Issue**: Frontend cannot call backend
-- **Fix**: Update `ALLOW_ORIGINS` in Render to include Vercel domain
-- **Check**: Render environment variables
-
-### Emails Not Sending
-- **Issue**: Resend domain not verified
-- **Fix**: Add and verify domain in Resend dashboard
-- **Check**: DNS TXT and CNAME records
-
-### Frontend Routes 404 on Refresh
-- **Issue**: Missing SPA fallback
-- **Fix**: Create `vercel.json` with rewrite rule
-- **Check**: File exists in `apps/web/`
-
-### Build Takes Too Long
-- **Issue**: Model downloads during build
-- **Fix**: This is normal first time (5-10 min). Subsequent builds use cache.
-- **Check**: Render build logs for progress
-
-## Cost Summary
-
-- **Render Backend**: $25/mo (Standard plan, 2GB RAM)
-- **Vercel Frontend**: Free (Hobby plan)
-- **Supabase**: $25/mo (Pro) or Free (if <500MB DB)
-- **Resend**: Free (3,000 emails/mo)
-- **Clerk**: Free (5,000 MAUs)
-
-**Total**: ~$50/mo or ~$25/mo with Supabase free tier
-
-## Success Criteria
-
-Deployment is successful when:
-- Backend health endpoint returns 200
-- Frontend loads without errors
-- WebSocket connects successfully
-- Email test delivers to inbox
-- End-to-end session flow works
-- No CORS errors in browser console
-
-## Emergency Rollback
-
-If anything breaks:
-- **Backend**: Render dashboard → Deployments → Click rollback on previous successful deploy
-- **Frontend**: Vercel dashboard → Deployments → Click rollback on previous successful deploy
-- **Database**: Supabase dashboard → Point-in-time recovery (if needed)
-
-## Next Steps After Deployment
-
-1. Set up monitoring (Render metrics, Vercel Analytics)
-2. Configure custom domains (optional)
-3. Enable autoscaling if traffic grows (Render)
-4. Set up backup strategies (Supabase automatic backups)
-5. Document secret rotation process
-
----
-
-**IF YOU GET STUCK AT ANY POINT**: Open the relevant dashboard (Render or Vercel) in a browser and configure manually. The CLI tools are convenient but the UIs are fully functional and often easier for troubleshooting.
+- Render: roll back `sensepro-api` to the previous healthy deployment.
+- Vercel: promote the previous production deployment.
+- Supabase: do not reverse migrations ad hoc. Use a reviewed forward migration or the
+  project recovery procedure.

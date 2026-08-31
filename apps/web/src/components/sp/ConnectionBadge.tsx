@@ -16,10 +16,20 @@ const cfg: Record<ConnState, { dot: string; label: string; ring: string }> = {
   OFFLINE: { dot: "bg-[color:var(--muted)]", label: "text-[color:var(--muted)]", ring: "" },
 };
 
-export function ConnectionBadge({ state, className }: { state: ConnState; className?: string }) {
+export function ConnectionBadge({
+  state,
+  label,
+  className,
+}: {
+  state: ConnState;
+  label?: string;
+  className?: string;
+}) {
   const c = cfg[state];
   return (
     <div
+      role="status"
+      aria-label={label ?? c.label}
       className={cn(
         "relative inline-flex items-center gap-2 rounded-md border border-[color:var(--line)]",
         "bg-gradient-to-b from-[color:var(--surface-2)]/85 to-[color:var(--surface-2)]/55",
@@ -37,7 +47,7 @@ export function ConnectionBadge({ state, className }: { state: ConnState; classN
           state === "LIVE" && "animate-[sensepro-pulse_1.6s_ease-in-out_infinite]",
         )}
       />
-      <span className={cn("uppercase", c.label)}>{state}</span>
+      <span className={cn("uppercase", c.label)}>{label ?? c.label}</span>
     </div>
   );
 }

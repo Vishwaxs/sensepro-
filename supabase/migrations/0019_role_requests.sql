@@ -33,8 +33,8 @@ create policy "admins_can_read_all_role_requests"
   using (
     exists (
       select 1 from public.user_roles ur
-      where (ur.user_id = auth.uid()::text or ur.user_id = (auth.jwt()->>'sub'))
-        and ur.role = 'admin'
+      where ur.user_id = auth.uid()
+        and ur.app_role = 'admin'
     )
   );
 

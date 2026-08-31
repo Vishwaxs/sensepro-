@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { Activity, Download, ShieldAlert, WifiOff } from "lucide-react";
 import { toast } from "sonner";
@@ -191,12 +191,13 @@ function SessionsPage() {
                         {exporting === r.id ? "Exporting…" : "Attendance PDF"}
                       </button>
                     ) : r.mode === "exam" ? (
-                      <a
-                        href={`/proctor?session_id=${encodeURIComponent(r.id)}`}
+                      <Link
+                        to="/proctor"
+                        search={{ session_id: r.id }}
                         className="sp-btn sp-btn-ghost h-11 text-xs"
                       >
                         <ShieldAlert className="h-3.5 w-3.5" /> Review
-                      </a>
+                      </Link>
                     ) : (
                       <span className="inline-flex h-11 items-center gap-2 px-2 font-mono-nums text-[10px] uppercase tracking-wider text-[color:var(--muted)]">
                         <Activity className="h-3.5 w-3.5" /> Aggregate only

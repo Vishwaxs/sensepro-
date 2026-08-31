@@ -1,7 +1,7 @@
 /** VNEI zone aggregates: direct RLS reads of engagement_zone_aggregates.
- *  Aggregate-only by schema — there is no student column to select, and a
- *  window that fell below k=5 simply has no row (suppressed at the source,
- *  never estimated). The UI renders that absence explicitly. */
+ *  Aggregate-only by schema — there is no student column to select. A missing
+ *  row means no reportable aggregate survived the privacy, observability, and
+ *  persistence gates; the client must not infer a zero or a specific cause. */
 
 import { supabase } from "@/lib/supabase";
 import type { Zone } from "@/lib/types";
@@ -14,7 +14,7 @@ export interface ZoneAggregateRow {
   zone: Zone | "class";
   n_tracked: number;
   enrolled_in_zone: number;
-  coverage: number; // 0..1: tracked / enrolled in the zone
+  coverage: number; // 0..1: tracked / configured roster within this reportable row
   vnei: number; // 0..1: visibility-normalised engagement index
   signals: Record<string, number>; // rates only, e.g. phone_rate
 }
@@ -31,8 +31,8 @@ export async function fetchZoneAggregates(sessionId: string): Promise<ZoneAggreg
   return data ?? [];
 }
 
-/** Rows of the newest window, keyed by zone. Zones missing from the map were
- *  suppressed (k<5) for that window. */
+/** Rows of the newest retained window, keyed by zone. A missing zone has no
+ *  reportable row; the backend does not expose which reporting gate applied. */
 export function latestWindow(rows: ZoneAggregateRow[]): {
   windowStart: string | null;
   byZone: Map<string, ZoneAggregateRow>;

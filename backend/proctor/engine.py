@@ -56,9 +56,7 @@ class ProctorEngine:
     phone_confirm_window_s: float = 2.5
     pose_monitor: HeadOrientationMonitor = field(default_factory=HeadOrientationMonitor)
     confirmed_detections: list[ObjectDetection] = field(default_factory=list, init=False)
-    pose_observations: dict[int, HeadPoseObservation] = field(
-        default_factory=dict, init=False
-    )
+    pose_observations: dict[int, HeadPoseObservation] = field(default_factory=dict, init=False)
     _last_flag: dict[tuple[str, int | None], float] = field(default_factory=dict)
     _phone_evidence: dict[int, _PhoneEvidence] = field(default_factory=dict, init=False)
 
@@ -94,9 +92,7 @@ class ProctorEngine:
                 continue
 
             self.suppressor.note_pitch(track.track_id, pose.pitch_deg, rel_ts)
-            observation, triggered = self.pose_monitor.observe(
-                track.track_id, pose, rel_ts
-            )
+            observation, triggered = self.pose_monitor.observe(track.track_id, pose, rel_ts)
             self.pose_observations[track.track_id] = observation
             if triggered:
                 flag = self._flag("head_pose", track, rel_ts)
@@ -148,13 +144,9 @@ class ProctorEngine:
         # passed class/box filters, bounded attribution and temporal confirmation.
         return self._flag("phone", track, rel_ts)
 
-    def _phone_is_confirmed(
-        self, detection: ObjectDetection, track: Track, rel_ts: float
-    ) -> bool:
+    def _phone_is_confirmed(self, detection: ObjectDetection, track: Track, rel_ts: float) -> bool:
         evidence = self._phone_evidence.get(track.track_id)
-        if evidence is None or not self._phone_boxes_compatible(
-            evidence.box, detection.box, track
-        ):
+        if evidence is None or not self._phone_boxes_compatible(evidence.box, detection.box, track):
             evidence = _PhoneEvidence(timestamps=[], box=detection.box)
             self._phone_evidence[track.track_id] = evidence
 
@@ -197,27 +189,25 @@ class ProctorEngine:
         track_diagonal = math.hypot(x2 - x1, y2 - y1)
         return shift <= 1.25 * max(track_diagonal, 1.0)
 
-    def _flag(
-        self, flag_type: str, track: Track | None, rel_ts: float
-    ) -> ProctorFlagRow | None:
+    def _flag(self, flag_type: str, track: Track | None, rel_ts: float) -> ProctorFlagRow | None:
         key = (flag_type, track.track_id if track else None)
         last = self._last_flag.get(key)
         if last is not None and (rel_ts - last) < self.cooldown_s:
             return None
-        self._last_flag[key] = rel_ts
         row = ProctorFlagRow(
             session_id=self.session_id,
             flag_type=flag_type,
             flagged_at=self.session_start + timedelta(seconds=rel_ts),
             student_id=track.student_id if track else None,
         )
-        self.writer.create_flag(row)
+        persisted = self.writer.create_flag(row)
+        if persisted is False:
+            return None
+        self._last_flag[key] = rel_ts
         return row
 
     @staticmethod
-    def _nearest_track(
-        detection: ObjectDetection, tracks: list[Track]
-    ) -> Track | None:
+    def _nearest_track(detection: ObjectDetection, tracks: list[Track]) -> Track | None:
         best: tuple[float, Track] | None = None
         cx, cy = _centre(detection.box)
         for track in tracks:
@@ -234,15 +224,12 @@ class ProctorEngine:
             # claiming most of the frame for one student. General proximity
             # covers a phone beside or partly overlapping the face.
             in_desk_reach = 0.0 <= dy <= 2.75 * height and dx <= 1.5 * width
-            in_proximity = (
-                -0.75 * height <= dy
-                and distance <= _ADJACENCY_DIAGONALS * max(diagonal, 1.0)
+            in_proximity = -0.75 * height <= dy and distance <= _ADJACENCY_DIAGONALS * max(
+                diagonal, 1.0
             )
             scores: list[float] = []
             if in_desk_reach:
-                scores.append(
-                    math.hypot(dx / (1.5 * width), dy / (2.75 * height))
-                )
+                scores.append(math.hypot(dx / (1.5 * width), dy / (2.75 * height)))
             if in_proximity:
                 scores.append(distance / max(diagonal, 1.0))
             if scores:

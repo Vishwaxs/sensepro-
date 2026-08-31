@@ -1,11 +1,12 @@
 # SensePro+ — Deployment Guide
 
-Everything below runs on **free tiers only**. Follow §0 → §6 in order and the whole
-system is live: dashboards, QR check-in, role-based access, and live capture.
+Follow §0 → §6 in order to deploy dashboards, role-based access, live capture,
+exam review, workshop aggregates, and lecture QR check-in.
 
-Verified at time of writing: 211 backend tests pass, ruff clean, web typecheck 0 errors,
-ESLint 0 errors, production build clean, all 14 routes serve, forged tokens rejected on
-10/10 staff endpoints.
+Current worktree verification: 285 backend tests pass; the web TypeScript check and
+production build pass; and the exam, workshop, capture, and deployment files pass focused
+Ruff/ESLint checks. Repository-wide lint still reports unrelated legacy formatting and
+unused-import findings, so do not describe the whole repository as lint-clean.
 
 ---
 
@@ -13,7 +14,8 @@ ESLint 0 errors, production build clean, all 14 routes serve, forged tokens reje
 
 | Piece | Host | Free tier | Card? |
 |---|---|---|---|
-| Database + Auth | **Supabase** | 500 MB DB, 50k MAU | no |
+| Database + legacy auth fallback | **Supabase** | 500 MB DB, 50k MAU | no |
+| Primary web authentication | **Clerk** | development/production limits vary | no |
 | Inference API | **Google Cloud Run** | ~60 h/month at 2 GiB (see §6) | yes¹ |
 | Web app | **Vercel** (Hobby) | 100 GB bandwidth | no |
 
@@ -35,23 +37,28 @@ recognition). Cloud Run's free tier is the only one of the three that fits the r
 
 ---
 
-## 1. Supabase — one-time setup
+## 1. Supabase database — one-time setup
 
 Already correct on the current project (`bwjrnkledjjpcvnzykqc`). Do this only for a new one.
+
+The production web app signs in through Clerk. Sections 1.2–1.6 document the retained
+Supabase Auth fallback only; do not enable or configure that fallback unless the deployment
+intentionally supports it. For Clerk, assign `teacher`, `management`, `admin`, or `student`
+in the user's Clerk `publicMetadata.role`. Never use client-editable unsafe metadata as the
+production source of an elevated role.
 
 ### 1.1 Apply migrations
 ```bash
 supabase link --project-ref <your-ref>
-supabase db push          # applies supabase/migrations/0001 … 0018
+supabase db push          # applies every pending file in supabase/migrations
 ```
 
-### 1.2 Enable the Access Token Hook ← the whole role system depends on this
+### 1.2 Optional legacy Supabase Auth fallback: Access Token Hook
 Dashboard → **Authentication → Hooks → Customize Access Token (JWT) Claims**
 → enable, select `public.custom_access_token_hook`.
 
-Without it no JWT carries `app_role`, every RLS policy denies, and every user lands on
-`/no-role`. There is deliberately no `user_roles` fallback in the client — migration 0003
-revokes that table from `authenticated`, so a client query could only ever return empty.
+Without it a Supabase Auth fallback JWT carries no `app_role`, RLS denies that fallback
+session, and the user lands on `/no-role`. Clerk sessions do not use this hook.
 
 Verify:
 ```sql
@@ -61,7 +68,7 @@ select public.custom_access_token_hook(
 -- must return  "claims": { "app_role": "admin" }
 ```
 
-### 1.3 Assign roles
+### 1.3 Optional legacy Supabase Auth fallback: assign roles
 Every user needs a `user_roles` row; there is no default role. **A brand-new signup — by
 password or by Google — has no role and correctly lands on `/no-role` until you run this.**
 
@@ -79,14 +86,14 @@ left join public.user_roles r on r.user_id = u.id
 where r.user_id is null;
 ```
 
-### 1.4 Link student accounts
+### 1.4 Optional legacy Supabase Auth fallback: link student accounts
 A `student` role also needs their auth account joined to their roster row, or `/me` shows
 "Not linked to a student record":
 ```sql
 update public.students set auth_uid = '<auth.users.id>' where reg_no = '2547201';
 ```
 
-### 1.5 Google sign-in (optional but recommended)
+### 1.5 Optional legacy Supabase Google sign-in
 
 1. **Google Cloud Console** → *APIs & Services → Credentials → Create credentials → OAuth
    client ID → Web application*.
@@ -110,7 +117,7 @@ update public.students set auth_uid = '<auth.users.id>' where reg_no = '2547201'
 The app handles the rest: `/auth/callback` waits for the session, then routes by role.
 A first-time Google user is a normal new account — give it a role with §1.3.
 
-### 1.6 Who signs in, and how
+### 1.6 Legacy Supabase fallback account notes
 
 There is **no self-serve access**. Anyone can create an account, but an account with no
 `user_roles` row can reach nothing — it lands on `/no-role` and stays there. An admin
@@ -236,9 +243,18 @@ Every flag above is doing a job:
 ```bash
 API=$(gcloud run services describe sensepro-api --region asia-south1 --format='value(status.url)')
 curl $API/healthz
-# expect vision_backend == vision_backend_configured == "insightface",
-#        supabase_configured true, embeddings_count and roster_count > 0
+curl --fail $API/readyz
+# /healthz is the detailed diagnostic. /readyz must return HTTP 200 with
+# ready=true before traffic is sent to this deployment.
 ```
+
+### 2.4 Render alternative
+
+The repository-root `render.yaml` deploys the same `backend/Dockerfile` on Render instead
+of maintaining a second native-Python runtime. It uses the 1 CPU / 2 GB plan, warms both
+model caches during the image build, and gates traffic on `/readyz`. Supply every
+`sync: false` value when creating the Blueprint; the strict check remains unavailable until
+Supabase and the required schema are reachable.
 
 ---
 
@@ -255,11 +271,22 @@ curl $API/healthz
 | `VITE_SUPABASE_ANON_KEY` | publishable key — safe in the browser, RLS protects data |
 | `VITE_API_BASE` | the Cloud Run URL from §2.3, e.g. `https://sensepro-api-xxxx.a.run.app` |
 | `VITE_WS_URL` | **`wss://sensepro-api-xxxx.a.run.app/ws/capture`** — see §4 |
+| `VITE_CLERK_PUBLISHABLE_KEY` | Clerk publishable key for the production instance |
+| `VITE_CLERK_PROXY_URL` | `https://<your-app>.vercel.app/__clerk` |
 | `VITE_CLASS_SECTION` | `MCA-4B` (must equal the students' `class_section`, or QR claim 403s) |
 | `VITE_CLASS_SUBJECT` | e.g. `Distributed Systems` |
 
+Also set `CLERK_SECRET_KEY` as a server-side Vercel variable without a `VITE_`
+prefix. The `/__clerk` Vercel Function needs it, but the value must never enter the
+browser bundle.
+
 Never put the secret or service-role key in a `VITE_*` variable: everything prefixed
 `VITE_` is compiled into the browser bundle.
+
+`vercel.json` runs `npm run build:deploy`. That command rejects missing or non-HTTPS API,
+Supabase, and Clerk proxy URLs; a non-WSS capture socket; the wrong WebSocket/proxy paths;
+a Supabase server key placed in the browser-key variable; and missing Clerk client/server
+keys before Vite builds the bundle.
 
 4. Deploy, then go back to §2.2 and set `ALLOW_ORIGINS` to the real Vercel URL, and §1.5
    step 4 to add the real redirect URL.
@@ -305,6 +332,7 @@ The deployed socket is the right choice for demos and remote evaluation.
 API=https://sensepro-api-xxxx.a.run.app
 curl $API/health            # 200
 curl $API/healthz           # vision + supabase + counts
+curl --fail $API/readyz     # 200 and ready=true; otherwise do not start the demo
 
 # staff-gated — these MUST be 401
 curl -o /dev/null -w '%{http_code}\n' -X POST $API/v1/sessions \
@@ -352,7 +380,7 @@ To make overspend impossible: *Billing → Budgets & alerts* → budget of ₹0 
 
 **Cold starts.** From zero, the container starts and loads ~400 MB of models: expect
 **15–25 s** on the first request. The models are already in the image, so this is load time,
-not download time. Open `/healthz` a minute before class to warm it.
+not download time. Open `/readyz` a minute before class and confirm it returns HTTP 200.
 
 **Vercel Hobby.** Non-commercial projects only — a university project qualifies. 100 GB
 bandwidth/month; this app's bundle is a few hundred KB.

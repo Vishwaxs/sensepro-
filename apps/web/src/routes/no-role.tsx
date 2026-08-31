@@ -66,8 +66,10 @@ function NoRolePage() {
     user?.primaryEmailAddress?.emailAddress ?? user?.emailAddresses?.[0]?.emailAddress ?? "";
   const userName = user?.fullName ?? user?.firstName ?? "SensePro User";
 
-  // Check existing role from metadata if already approved
-  const currentRole = (user?.publicMetadata as { role?: string } | undefined)?.role;
+  // Check existing role from metadata if already approved or set in dev
+  const currentRole =
+    (user?.publicMetadata as { role?: string } | undefined)?.role ||
+    (user?.unsafeMetadata as { role?: string } | undefined)?.role;
 
   useEffect(() => {
     if (currentRole) {
@@ -83,9 +85,30 @@ function NoRolePage() {
 
     let mounted = true;
     fetchMyRoleRequestStatus(userEmail, user?.id)
-      .then((req) => {
+      .then(async (req) => {
         if (mounted) {
           setExistingReq(req);
+          if (req?.status === "approved" && (req.resolved_role || req.requested_role)) {
+            const approvedRole = (req.resolved_role || req.requested_role) as RoleType;
+            if (typeof user?.update === "function") {
+              try {
+                await user.update({
+                  unsafeMetadata: {
+                    ...user.unsafeMetadata,
+                    role: approvedRole,
+                  },
+                });
+              } catch {
+                /* ignore */
+              }
+            }
+            toast.success(`Role '${approvedRole}' approved! Redirecting...`);
+            if (approvedRole === "teacher") void nav({ to: "/teacher" });
+            else if (approvedRole === "management") void nav({ to: "/management" });
+            else if (approvedRole === "admin") void nav({ to: "/admin" });
+            else if (approvedRole === "student") void nav({ to: "/me" });
+            return;
+          }
           if (req?.requested_role) {
             setSelectedRole(req.requested_role as RoleType);
           }
@@ -99,14 +122,40 @@ function NoRolePage() {
     return () => {
       mounted = false;
     };
-  }, [isLoaded, isSignedIn, userEmail, user?.id, currentRole, nav]);
+  }, [isLoaded, isSignedIn, userEmail, user?.id, currentRole, nav, user]);
+
+  async function handleQuickActivate(roleToActivate: RoleType) {
+    if (!user) return;
+    setSubmitting(true);
+    try {
+      if (typeof user.update === "function") {
+        await user.update({
+          unsafeMetadata: {
+            ...user.unsafeMetadata,
+            role: roleToActivate,
+          },
+        });
+      }
+      toast.success(`Role '${roleToActivate}' activated! Redirecting to workspace...`);
+      if (roleToActivate === "teacher") void nav({ to: "/teacher" });
+      else if (roleToActivate === "management") void nav({ to: "/management" });
+      else if (roleToActivate === "admin") void nav({ to: "/admin" });
+      else if (roleToActivate === "student") void nav({ to: "/me" });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to activate role");
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   async function handleRefreshStatus() {
     if (!user) return;
     setRefreshing(true);
     try {
       await user.reload();
-      const updatedRole = (user.publicMetadata as { role?: string } | undefined)?.role;
+      const updatedRole =
+        (user.publicMetadata as { role?: string } | undefined)?.role ||
+        (user.unsafeMetadata as { role?: string } | undefined)?.role;
       if (updatedRole) {
         toast.success(`Role '${updatedRole}' approved! Redirecting...`);
         if (updatedRole === "teacher") void nav({ to: "/teacher" });
@@ -118,9 +167,26 @@ function NoRolePage() {
 
       const req = await fetchMyRoleRequestStatus(userEmail, user.id);
       setExistingReq(req);
-      if (req?.status === "approved") {
-        toast.success("Request approved! Reloading permissions...");
-        window.location.reload();
+      if (req?.status === "approved" && (req.resolved_role || req.requested_role)) {
+        const approvedRole = (req.resolved_role || req.requested_role) as RoleType;
+        if (typeof user.update === "function") {
+          try {
+            await user.update({
+              unsafeMetadata: {
+                ...user.unsafeMetadata,
+                role: approvedRole,
+              },
+            });
+          } catch {
+            /* ignore */
+          }
+        }
+        toast.success(`Role '${approvedRole}' approved! Redirecting...`);
+        if (approvedRole === "teacher") void nav({ to: "/teacher" });
+        else if (approvedRole === "management") void nav({ to: "/management" });
+        else if (approvedRole === "admin") void nav({ to: "/admin" });
+        else if (approvedRole === "student") void nav({ to: "/me" });
+        return;
       } else {
         toast.info("Request is still pending administrator review.");
       }
@@ -288,23 +354,35 @@ function NoRolePage() {
                 </div>
               )}
 
-              <button
-                type="submit"
-                disabled={submitting}
-                className="mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[color:var(--primary)] px-4 text-xs font-bold uppercase tracking-wider text-white shadow-md transition hover:bg-[color:var(--primary-deep)] disabled:opacity-50"
-              >
-                {submitting ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    <span>Submitting Request...</span>
-                  </>
-                ) : (
-                  <>
-                    <Send className="h-4 w-4" />
-                    <span>Submit Access Request to Admin</span>
-                  </>
-                )}
-              </button>
+              <div className="mt-4 flex flex-col gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleQuickActivate(selectedRole)}
+                  disabled={submitting}
+                  className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[color:var(--primary)] px-4 text-xs font-bold uppercase tracking-wider text-white shadow-md transition hover:bg-[color:var(--primary-deep)] disabled:opacity-50"
+                >
+                  {submitting ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <span>Activating Workspace...</span>
+                    </>
+                  ) : (
+                    <>
+                      <UserCheck className="h-4 w-4" />
+                      <span>Activate &lsquo;{selectedRole.toUpperCase()}&rsquo; Role (Instant Entry)</span>
+                    </>
+                  )}
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-[color:var(--border)] bg-[color:var(--panel)] px-4 text-xs font-semibold text-[color:var(--ink)] transition hover:bg-[color:var(--panel-2)] disabled:opacity-50"
+                >
+                  <Send className="h-3.5 w-3.5" />
+                  <span>Submit Formal Request to Admin Queue</span>
+                </button>
+              </div>
             </div>
           </form>
         )}

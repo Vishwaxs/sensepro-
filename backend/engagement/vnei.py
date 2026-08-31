@@ -201,16 +201,19 @@ class ZoneAggregator:
                 vnei=_rate(win.attending, win.attend_obs),
                 signals=signals,
             )
-            self._writer.create_zone_aggregate(row)
-            rows.append(row)
+            persisted = self._writer.create_zone_aggregate(row)
+            if persisted is False:
+                withheld[zone] = "persistence_failed"
+            else:
+                rows.append(row)
         if self._zones:
             self._completed_windows += 1
             self._last_window = {
                 "state": "reported" if rows else "withheld",
                 "window_start": window_start.isoformat(),
-                # "reported" means handed to the configured writer. The writer
-                # deliberately owns retry/error policy, so this layer must not
-                # claim a database acknowledgement it cannot observe.
+                # Only rows acknowledged by writers that expose persistence
+                # status are reported. Legacy test/integration writers return
+                # None and remain source-compatible as successful sinks.
                 "reported_zones": [row.zone for row in rows],
                 "withheld_zones": withheld,
             }

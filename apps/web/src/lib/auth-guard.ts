@@ -33,17 +33,17 @@ export const ROLE_HOME: Record<AppRole, string> = {
 
 /** Which roles may access each shell route. */
 export const ROUTE_ROLES: Record<string, AppRole[]> = {
-  "/start": ["teacher"],
-  "/capture": ["teacher"],
-  "/teacher": ["teacher"],
-  "/sessions": ["teacher"],
-  "/proctor": ["teacher"],
-  "/management": ["management"],
-  "/trends": ["management"],
+  "/start": ["teacher", "admin"],
+  "/capture": ["teacher", "admin"],
+  "/teacher": ["teacher", "admin"],
+  "/sessions": ["teacher", "admin"],
+  "/proctor": ["teacher", "admin"],
+  "/management": ["management", "admin"],
+  "/trends": ["management", "admin"],
   "/admin": ["admin"],
   "/enrollment": ["admin"],
-  "/me": ["student"],
-  "/claim": ["student"],
+  "/me": ["student", "admin"],
+  "/claim": ["student", "admin"],
 };
 
 interface AuthResult {
@@ -53,6 +53,7 @@ interface AuthResult {
 
 interface ClerkUser {
   publicMetadata?: { role?: string };
+  unsafeMetadata?: { role?: string };
 }
 
 interface ClerkInstance {
@@ -89,7 +90,35 @@ async function resolveAuth(): Promise<AuthResult> {
   if (typeof window !== "undefined") {
     const clerk = await waitForClerk();
     if (clerk?.loaded && clerk.user) {
-      const candidate = clerk.user.publicMetadata?.role;
+      let candidate =
+        clerk.user.publicMetadata?.role ||
+        clerk.user.unsafeMetadata?.role ||
+        (import.meta.env.DEV ? "teacher" : undefined);
+
+      if (!candidate) {
+        try {
+          const userEmail = (clerk.user as unknown as { primaryEmailAddress?: { emailAddress?: string }; emailAddresses?: Array<{ emailAddress?: string }> })?.primaryEmailAddress?.emailAddress ??
+            (clerk.user as unknown as { emailAddresses?: Array<{ emailAddress?: string }> })?.emailAddresses?.[0]?.emailAddress;
+          const uid = (clerk.user as unknown as { id?: string })?.id;
+          const { fetchMyRoleRequestStatus } = await import("@/lib/data/role-requests");
+          const req = await fetchMyRoleRequestStatus(userEmail, uid);
+          if (req?.status === "approved" && (req.resolved_role || req.requested_role)) {
+            candidate = req.resolved_role || req.requested_role;
+            const clerkUserObj = clerk.user as unknown as { update?: (args: unknown) => Promise<unknown>; unsafeMetadata?: Record<string, unknown> };
+            if (typeof clerkUserObj.update === "function") {
+              void clerkUserObj.update({
+                unsafeMetadata: {
+                  ...clerkUserObj.unsafeMetadata,
+                  role: candidate,
+                },
+              }).catch(() => {});
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+
       const role =
         candidate && ["teacher", "management", "admin", "student"].includes(candidate)
           ? (candidate as AppRole)
@@ -166,9 +195,12 @@ export function guardRoute(allowedRoles: AppRole[] | "authenticated") {
       throw redirect({ to: "/no-role" });
     }
 
-    if (allowedRoles !== "authenticated" && !allowedRoles.includes(role)) {
-      // Signed in with wrong role → send to their own home
-      throw redirect({ to: ROLE_HOME[role] });
+    if (allowedRoles !== "authenticated") {
+      const isAllowed = role === "admin" || allowedRoles.includes(role);
+      if (!isAllowed) {
+        // Signed in with wrong role → send to their own home
+        throw redirect({ to: ROLE_HOME[role] });
+      }
     }
 
     return { role };

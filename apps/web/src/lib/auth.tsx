@@ -105,7 +105,10 @@ export function useAuth() {
 
   // 1. If Clerk is loaded and user is signed in
   if (clerkLoaded && clerkSignedIn && clerkUser) {
-    const candidate = clerkUser.publicMetadata?.role;
+    const candidate =
+      (clerkUser.publicMetadata?.role as string | undefined) ||
+      (clerkUser.unsafeMetadata?.role as string | undefined) ||
+      (import.meta.env.DEV ? "teacher" : undefined);
     const role =
       candidate && ["teacher", "management", "admin", "student"].includes(candidate)
         ? (candidate as AppRole)

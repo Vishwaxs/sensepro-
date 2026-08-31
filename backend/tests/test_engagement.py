@@ -33,11 +33,13 @@ def _sig(attending: bool | None = True) -> TrackSignals:
 
 
 class FakeAggWriter:
-    def __init__(self) -> None:
+    def __init__(self, persisted: bool | None = None) -> None:
         self.rows = []
+        self.persisted = persisted
 
-    def create_zone_aggregate(self, row) -> None:
+    def create_zone_aggregate(self, row) -> bool | None:
         self.rows.append(row)
+        return self.persisted
 
 
 def _aggregator(writer: FakeAggWriter, enrolled: dict[str, int] | None = None) -> ZoneAggregator:
@@ -79,6 +81,21 @@ def test_zone_below_k_floor_is_suppressed() -> None:
     assert agg.flush() == [] and writer.rows == []
     agg.observe([(_track(t), _sig()) for t in range(1, 6)], FRAME_H, rel_ts=0.0)  # 5 -> emits
     assert len(agg.flush()) == 1
+
+
+def test_failed_aggregate_write_is_not_reported_as_persisted() -> None:
+    writer = FakeAggWriter(persisted=False)
+    agg = _aggregator(writer)
+    agg.observe([(_track(t), _sig()) for t in range(1, 6)], FRAME_H, rel_ts=0.0)
+
+    assert agg.flush() == []
+    assert len(writer.rows) == 1
+    assert agg.window_status(1.0)["last_window"] == {
+        "state": "withheld",
+        "window_start": SESSION_START.isoformat(),
+        "reported_zones": [],
+        "withheld_zones": {"front": "persistence_failed"},
+    }
 
 
 def test_window_rollover_emits_closed_window() -> None:

@@ -84,6 +84,7 @@ def test_admin_list_and_resolve_role_request():
 async def test_notify_admin_role_request_rate_limiting():
     from app import notify
 
+    notify._last_role_request_email_time = None
     with patch("app.notify.send_email", new_callable=AsyncMock) as mock_send:
         mock_send.return_value = {"success": True, "id": "msg_test_1"}
 

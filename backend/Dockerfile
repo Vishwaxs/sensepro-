@@ -37,6 +37,8 @@ WORKDIR /app
 COPY pyproject.toml ./
 RUN pip install --upgrade pip setuptools wheel \
     && pip install "cython<4" "numpy<2" \
+    && pip install "torch==2.12.1" "torchvision==0.27.1" \
+        --index-url https://download.pytorch.org/whl/cpu \
     && pip install ".[insightface,supabase,proctor]"
 
 COPY . .

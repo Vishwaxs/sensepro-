@@ -15,12 +15,13 @@ import {
   X,
   LogOut,
 } from "lucide-react";
-import { ConnectionBadge } from "./ConnectionBadge";
+import { ConnectionBadge, type ConnState } from "./ConnectionBadge";
 import { cn } from "@/lib/utils";
-import { useState, type ReactNode } from "react";
-import { MagneticHover, ParticleField, ThemeToggle } from "@/components/fx";
+import { useEffect, useState, type ReactNode } from "react";
+import { ThemeToggle } from "@/components/fx";
 import { useAuth, signOut } from "@/lib/auth";
 import type { AppRole } from "@/lib/auth-guard";
+import { API_BASE } from "@/lib/api";
 
 interface NavItem {
   to: string;
@@ -28,32 +29,134 @@ interface NavItem {
   icon: typeof Radio;
   mono: string;
   roles: AppRole[];
+  group: string;
 }
 
 const NAV: NavItem[] = [
   // Teacher
-  { to: "/start", label: "Start Session", icon: Radio, mono: "STR", roles: ["teacher"] },
-  { to: "/teacher", label: "Live Session", icon: Users, mono: "TCH", roles: ["teacher"] },
-  { to: "/sessions", label: "Sessions", icon: ClipboardList, mono: "SES", roles: ["teacher"] },
-  { to: "/proctor", label: "Proctor Queue", icon: ShieldAlert, mono: "PRO", roles: ["teacher"] },
+  {
+    to: "/start",
+    label: "Start Session",
+    icon: Radio,
+    mono: "STR",
+    roles: ["teacher"],
+    group: "Teacher",
+  },
+  {
+    to: "/teacher",
+    label: "Live Session",
+    icon: Users,
+    mono: "TCH",
+    roles: ["teacher"],
+    group: "Teacher",
+  },
+  {
+    to: "/sessions",
+    label: "Sessions",
+    icon: ClipboardList,
+    mono: "SES",
+    roles: ["teacher"],
+    group: "Teacher",
+  },
+  {
+    to: "/proctor",
+    label: "Proctor Queue",
+    icon: ShieldAlert,
+    mono: "PRO",
+    roles: ["teacher"],
+    group: "Teacher",
+  },
 
   // Management
-  { to: "/management", label: "Cohort Analytics", icon: BarChart3, mono: "MGT", roles: ["management"] },
-  { to: "/trends", label: "Aggregate Trends", icon: LineChart, mono: "TRD", roles: ["management"] },
+  {
+    to: "/management",
+    label: "Cohort Analytics",
+    icon: BarChart3,
+    mono: "MGT",
+    roles: ["management"],
+    group: "Management",
+  },
+  {
+    to: "/trends",
+    label: "Aggregate Trends",
+    icon: LineChart,
+    mono: "TRD",
+    roles: ["management"],
+    group: "Management",
+  },
 
   // Admin
-  { to: "/admin", label: "System Console", icon: Shield, mono: "ADM", roles: ["admin"] },
-  { to: "/enrollment", label: "Enrollment Station", icon: Fingerprint, mono: "ENR", roles: ["admin"] },
+  {
+    to: "/admin",
+    label: "System Console",
+    icon: Shield,
+    mono: "ADM",
+    roles: ["admin"],
+    group: "Admin",
+  },
+  {
+    to: "/enrollment",
+    label: "Enrollment Station",
+    icon: Fingerprint,
+    mono: "ENR",
+    roles: ["admin"],
+    group: "Admin",
+  },
 
   // Student
-  { to: "/me", label: "My Attendance", icon: User, mono: "ME", roles: ["student"] },
+  {
+    to: "/me",
+    label: "My Attendance",
+    icon: User,
+    mono: "ME",
+    roles: ["student"],
+    group: "Student",
+  },
 ];
 
 export function AppShell({ children, title }: { children: ReactNode; title?: string }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [backendState, setBackendState] = useState<ConnState>("RECONNECTING");
   const { user } = useAuth();
   const nav = useNavigate();
+
+  useEffect(() => {
+    let active = true;
+
+    async function refreshBackendState() {
+      if (!navigator.onLine) {
+        if (active) setBackendState("OFFLINE");
+        return;
+      }
+
+      if (active) setBackendState("RECONNECTING");
+      try {
+        const response = await fetch(`${API_BASE}/healthz`, { cache: "no-store" });
+        if (active) setBackendState(response.ok ? "LIVE" : "OFFLINE");
+      } catch {
+        if (active) setBackendState("OFFLINE");
+      }
+    }
+
+    const handleOnline = () => void refreshBackendState();
+    const handleOffline = () => setBackendState("OFFLINE");
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") void refreshBackendState();
+    };
+
+    void refreshBackendState();
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      active = false;
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
 
   const initials = user?.full_name
     ? user.full_name
@@ -70,17 +173,18 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
   }
 
   const userRole = user?.role;
-  const visibleNav = NAV.filter((n) => userRole && n.roles.includes(userRole));
+  const isAdmin = userRole === "admin";
+  const visibleNav = NAV.filter((n) => userRole && (isAdmin || n.roles.includes(userRole)));
 
   const navContent = (
     <>
       {/* Brand */}
       <div className="flex items-center gap-3 px-5 pt-5 pb-6">
         <div
-          className="flex h-8 w-8 items-center justify-center rounded-md border border-[color:var(--line)] animate-breathe"
+          className="flex h-8 w-8 items-center justify-center rounded-md border border-[color:var(--line)]"
           style={{ background: "linear-gradient(135deg, var(--primary-deep), var(--primary))" }}
         >
-          <Command className="h-4 w-4 text-[#07070A]" strokeWidth={2.25} />
+          <Command className="h-4 w-4 text-white" strokeWidth={2.25} />
         </div>
         <div className="min-w-0">
           <div className="font-display text-[15px] font-extrabold leading-none tracking-tight text-[color:var(--ink)]">
@@ -93,31 +197,45 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
       <div className="mx-5 sp-hairline" />
 
       {/* Nav */}
-      <nav className="flex flex-col gap-0.5 px-3 pt-4">
-        <div className="sp-eyebrow px-3 pb-2 text-[9.5px]">
-          {userRole ? `${userRole.toUpperCase()} WORKSPACE` : "WORKSPACE"}
+      <nav className="flex flex-col gap-0.5 px-3 pt-4 overflow-y-auto">
+        <div className="flex items-center justify-between px-3 pb-2">
+          <span className="sp-eyebrow text-[9.5px]">
+            {userRole ? `${userRole.toUpperCase()} WORKSPACE` : "WORKSPACE"}
+          </span>
+          {isAdmin && (
+            <span className="text-[9px] font-mono-nums uppercase px-1.5 py-0.5 rounded bg-[color:var(--primary)]/15 text-[color:var(--primary)] font-semibold">
+              Superuser
+            </span>
+          )}
         </div>
-        {visibleNav.map((n) => {
-          const active = pathname.startsWith(n.to);
+        {visibleNav.map((n, idx) => {
+          const active = pathname.startsWith(n.to.split("?")[0]!);
           const Icon = n.icon;
+          const showGroupHeader = isAdmin && (idx === 0 || visibleNav[idx - 1]?.group !== n.group);
+
           return (
-            <MagneticHover key={n.to} strength={active ? 0 : 4}>
+            <div key={n.to}>
+              {showGroupHeader && (
+                <div className="px-3 pt-3 pb-1 text-[9px] font-mono uppercase tracking-[0.14em] text-[color:var(--muted)]/70">
+                  {n.group}
+                </div>
+              )}
               <Link
                 to={n.to}
                 data-active={active}
                 onClick={() => setMobileOpen(false)}
                 className={cn(
-                  "sp-focus group relative flex h-11 items-center gap-3 rounded-md px-3 text-[13px] transition-all duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]",
+                  "sp-focus group relative flex h-11 items-center gap-3 rounded-md px-3 text-[13px] transition-colors duration-200",
                   active
-                    ? "bg-gradient-to-r from-[color:var(--surface-2)] to-[color:var(--surface-2)]/40 text-[color:var(--ink)] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.05)]"
-                    : "text-[color:var(--muted)] hover:bg-[color:var(--surface-2)]/50 hover:text-[color:var(--ink)]",
+                    ? "bg-[color:var(--surface-2)] text-[color:var(--ink)] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.05)]"
+                    : "text-[color:var(--muted)] hover:bg-[color:var(--surface-2)]/60 hover:text-[color:var(--ink)]",
                 )}
               >
                 <span
                   aria-hidden
                   className={cn(
-                    "absolute left-0 top-1/2 h-5 w-[2px] -translate-y-1/2 rounded-r-full transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
-                    active ? "opacity-100 shadow-[0_0_10px_rgba(245,158,11,0.5)]" : "opacity-0",
+                    "absolute left-0 top-1/2 h-5 w-[2px] -translate-y-1/2 rounded-r-full transition-opacity duration-200",
+                    active ? "opacity-100" : "opacity-0",
                   )}
                   style={{ background: "var(--primary)" }}
                 />
@@ -133,12 +251,12 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
                   {n.mono}
                 </span>
               </Link>
-            </MagneticHover>
+            </div>
           );
         })}
       </nav>
 
-      {/* Operator card + sign out */}
+      {/* Operator card */}
       <div className="mt-auto p-4">
         <div className="flex items-center gap-3 rounded-md border border-[color:var(--line)] bg-[color:var(--surface-2)]/70 p-3">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-[color:var(--line)] bg-[color:var(--surface)] font-mono-nums text-[11px] font-semibold text-[color:var(--ink)]">
@@ -148,8 +266,11 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
             <div className="truncate text-[13px] leading-tight text-[color:var(--ink)] font-medium">
               {user?.full_name ?? "Loading…"}
             </div>
-            <div className="flex items-center gap-1.5 mt-0.5">
-              <span className="font-mono-nums text-[9px] uppercase tracking-[0.16em] px-1.5 py-0.5 rounded bg-[color:var(--primary)]/15 text-[color:var(--primary)] font-semibold">
+            <div
+              className="mt-1 flex items-center gap-1"
+              aria-label={`Role: ${user?.role ?? "not assigned"}`}
+            >
+              <span className="rounded bg-[color:var(--primary)]/15 px-1.5 py-0.5 font-mono-nums text-[9px] font-semibold uppercase tracking-[0.16em] text-[color:var(--primary)]">
                 {user?.role ?? "No Role"}
               </span>
             </div>
@@ -169,9 +290,6 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
 
   return (
     <div className="app-bg relative flex min-h-screen w-full overflow-hidden">
-      {/* Ambient layers */}
-      <ParticleField className="fixed inset-0 -z-10" count={10} maxOpacity={0.05} speed={0.1} />
-
       {/* Desktop sidebar */}
       <aside className="glass-frosted sticky top-0 hidden h-screen w-[232px] shrink-0 flex-col rounded-none border-0 border-r border-[color:var(--line)] lg:flex">
         {navContent}
@@ -231,7 +349,16 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
                 month: "short",
               })}
             </div>
-            <ConnectionBadge state="LIVE" />
+            <ConnectionBadge
+              state={backendState}
+              label={
+                backendState === "LIVE"
+                  ? "API ready"
+                  : backendState === "RECONNECTING"
+                    ? "Checking API"
+                    : "API offline"
+              }
+            />
           </div>
         </header>
         <AnimatePresence mode="wait">

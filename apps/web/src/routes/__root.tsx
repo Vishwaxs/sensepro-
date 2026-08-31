@@ -16,6 +16,11 @@ import { dark } from "@clerk/themes";
 import appCss from "../styles.css?url";
 
 const CLERK_PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+// When set (production on Vercel), Clerk routes Frontend API requests through
+// the /__clerk serverless proxy instead of directly to clerk.sensepro-six.vercel.app.
+// Leave unset for local dev so the Development instance works directly.
+const CLERK_PROXY_URL = import.meta.env.VITE_CLERK_PROXY_URL || undefined;
+
 if (!CLERK_PUBLISHABLE_KEY) {
   throw new Error(
     "Missing VITE_CLERK_PUBLISHABLE_KEY — add it to apps/web/.env.local. Get it from https://dashboard.clerk.com → API Keys.",
@@ -152,6 +157,7 @@ function ThemedClerkProvider({ children }: { children: ReactNode }) {
   return (
     <ClerkProvider
       publishableKey={CLERK_PUBLISHABLE_KEY}
+      proxyUrl={CLERK_PROXY_URL}
       signInUrl="/login"
       signUpUrl="/login"
       signInFallbackRedirectUrl="/teacher"

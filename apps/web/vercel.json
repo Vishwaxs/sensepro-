@@ -1,9 +1,13 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "npm run build",
+  "buildCommand": "npm run build:deploy",
   "outputDirectory": "dist/client",
   "framework": null,
-  "rewrites": [{ "source": "/(.*)", "destination": "/_shell.html" }],
+  "rewrites": [
+    { "source": "/__clerk", "destination": "/api/clerk-proxy?__clerk_proxy_path=/" },
+    { "source": "/__clerk/(.*)", "destination": "/api/clerk-proxy?__clerk_proxy_path=/$1" },
+    { "source": "/(.*)", "destination": "/_shell.html" }
+  ],
   "headers": [
     {
       "source": "/assets/(.*)",

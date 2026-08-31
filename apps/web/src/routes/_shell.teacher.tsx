@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Activity, Download, Filter, QrCode, ShieldAlert, WifiOff } from "lucide-react";
+import { Activity, Download, Filter, QrCode, RefreshCw, ShieldAlert, WifiOff } from "lucide-react";
 import { toast } from "sonner";
 import { KpiCard } from "@/components/sp/KpiCard";
 import { StateChip } from "@/components/sp/StateChip";
@@ -81,9 +81,7 @@ function TeacherPage() {
         const active = await fetchActiveSession();
         if (cancelled) return;
         const students =
-          active?.mode === "workshop"
-            ? []
-            : await fetchStudents(active?.class_section);
+          active?.mode === "workshop" ? [] : await fetchStudents(active?.class_section);
         if (cancelled) return;
         studentsRef.current = students;
         setSession(active);
@@ -136,8 +134,6 @@ function TeacherPage() {
 
   const present = counts.PRESENT;
   const total = roster.length;
-  const openFlags = pendingFlags;
-
   const filtered = useMemo(
     () => (filter === "ALL" ? roster : roster.filter((r) => r.state === filter)),
     [roster, filter],
@@ -216,7 +212,7 @@ function TeacherPage() {
       )}
 
       {/* KPI row */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <KpiCard
           label="Present"
           value={present}
@@ -232,15 +228,9 @@ function TeacherPage() {
           accent="accent"
           hint="Live"
         />
-        <KpiCard
-          label="Open flags"
-          value={openFlags}
-          accent={openFlags > 0 ? "warn" : "muted"}
-          hint="Awaiting review"
-        />
       </div>
 
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+      <div>
         {/* Roster */}
         <section className="glass-panel overflow-hidden">
           <header className="flex flex-col gap-4 border-b border-[color:var(--line)] px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
@@ -416,15 +406,6 @@ function TeacherPage() {
             )}
           </div>
         </section>
-
-        {/* Proctor review */}
-        <section className="min-w-0">
-          <ProctorReviewPanel
-            sessionId={session?.id ?? null}
-            studentNames={studentNames}
-            onPendingCount={setPendingFlags}
-          />
-        </section>
       </div>
 
       {/* Absentee QR fallback — same panel capture.tsx uses, reachable here too
@@ -466,7 +447,7 @@ function ExamTeacherView({
           </p>
         </div>
         <span className="inline-flex min-h-11 items-center gap-2 rounded-md border border-[color:var(--warn)]/40 bg-[color:var(--warn)]/10 px-3 font-mono-nums text-[11px] uppercase tracking-wider text-[color:var(--warn)]">
-          <ShieldAlert className="h-4 w-4" /> live proctoring
+          <ShieldAlert className="h-4 w-4" /> exam session open
         </span>
       </header>
 
@@ -498,18 +479,30 @@ function ExamTeacherView({
 function WorkshopTeacherView({ session }: { session: ActiveSession }) {
   const [rows, setRows] = useState<ZoneAggregateRow[]>([]);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
+  const [retryRevision, setRetryRevision] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    let inFlight = false;
+    setRows([]);
+    setState("loading");
+    setLastUpdatedAt(null);
+
     const refresh = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const next = await fetchZoneAggregates(session.id);
         if (!cancelled) {
           setRows(next);
           setState("ready");
+          setLastUpdatedAt(new Date());
         }
       } catch {
         if (!cancelled) setState("error");
+      } finally {
+        inFlight = false;
       }
     };
     void refresh();
@@ -518,7 +511,7 @@ function WorkshopTeacherView({ session }: { session: ActiveSession }) {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [session.id]);
+  }, [retryRevision, session.id]);
 
   const latest = useMemo(() => latestWindow(rows), [rows]);
   const zoneRows = [...latest.byZone.values()].filter((row) => row.zone !== "class");
@@ -533,9 +526,16 @@ function WorkshopTeacherView({ session }: { session: ActiveSession }) {
   const meanCoverage = classRow
     ? classRow.coverage
     : enrolled > 0
-      ? zoneRows.reduce((sum, row) => sum + row.coverage * row.enrolled_in_zone, 0) /
-        enrolled
+      ? zoneRows.reduce((sum, row) => sum + row.coverage * row.enrolled_in_zone, 0) / enrolled
       : null;
+  const reportableWindows = new Set(
+    rows.filter((row) => row.zone !== "class").map((row) => row.window_start),
+  ).size;
+  const refreshedAt = lastUpdatedAt?.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 
   return (
     <div className="space-y-6">
@@ -545,61 +545,107 @@ function WorkshopTeacherView({ session }: { session: ActiveSession }) {
             Workshop engagement
           </div>
           <h2 className="mt-1 font-display text-2xl font-extrabold tracking-tight text-[color:var(--ink)]">
-            {session.subject ?? session.class_section}
+            {session.subject ?? "Live workshop"}
           </h2>
           <p className="mt-1 max-w-2xl text-sm text-[color:var(--muted)]">
             Anonymous zone-level posture, activity, and device signals. This view contains no
             participant identities or individual outcomes.
           </p>
+          <p className="mt-2 font-mono-nums text-[11px] text-[color:var(--muted)]">
+            {session.class_section} · started {new Date(session.starts_at).toLocaleString()}
+            {refreshedAt ? ` · data refreshed ${refreshedAt}` : ""}
+          </p>
         </div>
-        <span className="inline-flex min-h-11 items-center gap-2 rounded-md border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/10 px-3 font-mono-nums text-[11px] uppercase tracking-wider text-[color:var(--accent)]">
-          <Activity className="h-4 w-4" /> aggregate stream
+        <span
+          className={cn(
+            "inline-flex min-h-11 items-center gap-2 rounded-md border px-3 font-mono-nums text-[11px] uppercase tracking-wider",
+            state === "error"
+              ? "border-[color:var(--warn)]/40 bg-[color:var(--warn)]/10 text-[color:var(--warn)]"
+              : "border-[color:var(--accent)]/40 bg-[color:var(--accent)]/10 text-[color:var(--accent)]",
+          )}
+          aria-live="polite"
+        >
+          {state === "error" ? <WifiOff className="h-4 w-4" /> : <Activity className="h-4 w-4" />}
+          {state === "loading"
+            ? "connecting aggregate stream"
+            : state === "error"
+              ? "aggregate stream unavailable"
+              : "aggregate stream live"}
         </span>
       </header>
 
-      <div className="grid gap-4 sm:grid-cols-3">
-        <KpiCard
-          label={classRow ? "Class signal" : "Weighted zone signal"}
-          value={meanVnei === null ? "Withheld" : Math.round(meanVnei * 100)}
-          suffix={meanVnei === null ? undefined : "%"}
-          accent={meanVnei === null ? "muted" : "accent"}
-          hint={
-            meanVnei === null
-              ? "Waiting for reportable window"
-              : classRow
-                ? "Latest reportable window"
-                : "Peak-visible weighted · latest window"
-          }
-        />
-        <KpiCard
-          label="Camera coverage"
-          value={meanCoverage === null ? "—" : Math.round(meanCoverage * 100)}
-          suffix={meanCoverage === null ? undefined : "%"}
-          accent="primary"
-          hint="Peak visible ÷ configured zone roster"
-        />
-        <KpiCard
-          label="Aggregate windows"
-          value={new Set(rows.map((row) => row.window_start)).size}
-          accent="ok"
-          hint="Persisted class aggregates"
-        />
-      </div>
-
-      <section className="glass-panel p-5 sm:p-6">
-        {state === "loading" ? (
+      {state === "loading" ? (
+        <section className="glass-panel p-5 sm:p-6" aria-busy="true">
           <div className="grid min-h-52 place-items-center font-mono-nums text-xs text-[color:var(--muted)]">
             Loading workshop windows…
           </div>
-        ) : state === "error" ? (
-          <div className="flex min-h-52 flex-col items-center justify-center gap-2 text-center text-[color:var(--muted)]">
+        </section>
+      ) : state === "error" ? (
+        <section className="glass-panel p-5 sm:p-6">
+          <div className="flex min-h-52 flex-col items-center justify-center gap-3 text-center text-[color:var(--muted)]">
             <WifiOff className="h-8 w-8 opacity-50" />
-            <p>Workshop aggregates could not be refreshed.</p>
+            <div>
+              <p className="font-medium text-[color:var(--ink)]">
+                Workshop aggregates could not be refreshed.
+              </p>
+              <p className="mt-1 max-w-md text-sm">
+                No cached values are shown as current. Check the connection and try again.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setState("loading");
+                setRetryRevision((revision) => revision + 1);
+              }}
+              className="inline-flex min-h-11 items-center gap-2 rounded-md border border-[color:var(--line)] bg-[color:var(--surface-2)] px-4 text-sm font-semibold text-[color:var(--ink)] transition-colors hover:border-[color:var(--primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--primary)]"
+            >
+              <RefreshCw className="h-4 w-4" /> Retry
+            </button>
           </div>
-        ) : (
-          <VneiPanel rows={rows} />
-        )}
-      </section>
+        </section>
+      ) : (
+        <>
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <KpiCard
+              label={classRow ? "Class signal" : "Weighted zone signal"}
+              value={meanVnei === null ? "Withheld" : Math.round(meanVnei * 100)}
+              suffix={meanVnei === null ? undefined : "%"}
+              accent={meanVnei === null ? "muted" : "accent"}
+              hint={
+                meanVnei === null
+                  ? "Waiting for a reportable window"
+                  : classRow
+                    ? "Latest reportable window"
+                    : "Peak-visible weighted · latest window"
+              }
+            />
+            <KpiCard
+              label="Coverage in reportable zones"
+              value={meanCoverage === null ? "—" : Math.round(meanCoverage * 100)}
+              suffix={meanCoverage === null ? undefined : "%"}
+              accent={meanCoverage !== null && meanCoverage < 0.5 ? "warn" : "primary"}
+              hint="Peak visible ÷ configured roster"
+            />
+            <KpiCard
+              label="Zones reported"
+              value={zoneRows.length}
+              accent={zoneRows.length > 0 ? "ok" : "muted"}
+              hint="Latest window · privacy floor met"
+            />
+            <KpiCard
+              label="Reportable windows"
+              value={reportableWindows}
+              accent={reportableWindows > 0 ? "ok" : "muted"}
+              hint="At least one zone persisted"
+            />
+          </div>
+
+          <section className="glass-panel p-5 sm:p-6">
+            <VneiPanel rows={rows} />
+          </section>
+        </>
+      )}
 
       <p className="rounded-md border border-[color:var(--line)] bg-[color:var(--surface-2)] px-4 py-3 font-mono-nums text-[11px] leading-relaxed text-[color:var(--muted)]">
         A zone is reported only when at least five faces are simultaneously visible and

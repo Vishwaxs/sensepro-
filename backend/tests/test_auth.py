@@ -130,7 +130,7 @@ def _mock_clerk(monkeypatch, verified_claims: dict, db_role: str | None = None) 
         return verified_claims
 
     monkeypatch.setattr(app_auth.jwt, "decode", _decode)
-    monkeypatch.setattr(app_auth, "_get_jwks_client", lambda _url: _FakeJwksClient())
+    monkeypatch.setattr(app_auth, "_get_jwks_client", lambda _url, _headers=None: _FakeJwksClient())
     monkeypatch.setattr(app_auth, "_writer", lambda: _FakeWriter(role=db_role))
 
 
@@ -155,3 +155,86 @@ def test_clerk_without_trusted_app_role_fails_closed(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         app_auth.require_role("Bearer clerk-token", app_auth.STAFF_ROLES)
     assert exc.value.status_code == 403
+
+
+# --- Clerk signing-key sources -------------------------------------------
+#
+# A Clerk instance whose domain is a Vercel provider domain still stamps `iss`
+# with clerk.<domain>, and that host has no DNS, so {iss}/.well-known/jwks.json
+# is unfetchable in production. These pin the resolution order that keeps
+# verification working there without per-environment configuration.
+
+
+@pytest.fixture(autouse=True)
+def _clear_jwks_memo():
+    app_auth._jwks_source_for_issuer.clear()
+    yield
+    app_auth._jwks_source_for_issuer.clear()
+
+
+def test_backend_api_is_the_first_jwks_source_when_a_secret_key_is_set(monkeypatch):
+    monkeypatch.setattr(app_auth, "_clerk_secret_key", lambda: "sk_live_stub")
+    sources = app_auth._clerk_jwks_sources("https://clerk.sensepro-six.vercel.app")
+    url, headers = sources[0]
+    assert url == "https://api.clerk.com/v1/jwks"
+    assert headers["Authorization"] == "Bearer sk_live_stub"
+    assert headers["Clerk-API-Version"] == app_auth._CLERK_BAPI_VERSION
+
+
+def test_issuer_jwks_still_offered_so_a_keyless_deployment_keeps_working(monkeypatch):
+    monkeypatch.setattr(app_auth, "_clerk_secret_key", lambda: "")
+    sources = app_auth._clerk_jwks_sources("https://funny-teal-523.clerk.accounts.dev")
+    assert sources[0] == (
+        "https://funny-teal-523.clerk.accounts.dev/.well-known/jwks.json",
+        None,
+    )
+    assert all(url != "https://api.clerk.com/v1/jwks" for url, _ in sources)
+
+
+def test_issuer_is_a_fallback_when_the_secret_key_is_for_another_instance(monkeypatch):
+    monkeypatch.setattr(app_auth, "_clerk_secret_key", lambda: "sk_live_stub")
+    urls = [url for url, _ in app_auth._clerk_jwks_sources("https://clerk.example.com")]
+    assert "https://clerk.example.com/.well-known/jwks.json" in urls
+
+
+def test_a_source_that_worked_is_tried_first_next_time(monkeypatch):
+    monkeypatch.setattr(app_auth, "_clerk_secret_key", lambda: "sk_live_stub")
+    issuer = "https://clerk.sensepro-six.vercel.app"
+    issuer_jwks = f"{issuer}/.well-known/jwks.json"
+
+    attempted: list[str] = []
+
+    class _OnlyIssuerHasKeys:
+        def __init__(self, url: str):
+            self._url = url
+
+        def get_signing_key_from_jwt(self, _token: str):
+            attempted.append(self._url)
+            if self._url != issuer_jwks:
+                raise RuntimeError("unreachable host")
+            return _FakeSigningKey()
+
+    monkeypatch.setattr(app_auth, "_get_jwks_client", lambda url, _headers=None: _OnlyIssuerHasKeys(url))
+
+    assert app_auth._clerk_signing_key("tok", issuer).key == "public-key"
+    assert attempted == ["https://api.clerk.com/v1/jwks", issuer_jwks]
+
+    attempted.clear()
+    assert app_auth._clerk_signing_key("tok", issuer).key == "public-key"
+    assert attempted == [issuer_jwks]  # the dead host is not retried
+
+
+def test_no_usable_source_fails_closed_without_echoing_the_secret(monkeypatch):
+    monkeypatch.setattr(app_auth, "_clerk_secret_key", lambda: "sk_live_stub")
+
+    class _AlwaysEchoesTheKey:
+        def get_signing_key_from_jwt(self, _token: str):
+            raise RuntimeError("upstream said: Bearer sk_live_stub rejected")
+
+    monkeypatch.setattr(app_auth, "_get_jwks_client", lambda _url, _headers=None: _AlwaysEchoesTheKey())
+
+    with pytest.raises(HTTPException) as exc:
+        app_auth._clerk_signing_key("tok", "https://clerk.sensepro-six.vercel.app")
+    assert exc.value.status_code == 401
+    assert "sk_live_stub" not in exc.value.detail
+    assert "***" in exc.value.detail

@@ -2,6 +2,7 @@
  *  presence_intervals. No backend read endpoint, no polling (ADR 0006). */
 
 import { supabase } from "@/lib/supabase";
+import { API_BASE, authHeader } from "@/lib/api";
 import type { PresenceState, RosterEntry } from "@/lib/types";
 
 export interface ActiveSession {
@@ -32,6 +33,18 @@ export interface IntervalRow {
 export async function fetchActiveSession(
   mode?: ActiveSession["mode"],
 ): Promise<ActiveSession | null> {
+  try {
+    const headers = await authHeader();
+    const url = mode ? `${API_BASE}/v1/sessions/active?mode=${mode}` : `${API_BASE}/v1/sessions/active`;
+    const res = await fetch(url, { headers });
+    if (res.ok) {
+      const data = await res.json();
+      return (data.session as ActiveSession | undefined) ?? null;
+    }
+  } catch {
+    /* fallback */
+  }
+
   let query = supabase
     .from("class_sessions")
     .select("id, class_section, subject, mode, starts_at")
@@ -44,6 +57,19 @@ export async function fetchActiveSession(
 }
 
 export async function fetchStudents(classSection?: string): Promise<StudentRow[]> {
+  try {
+    const headers = await authHeader();
+    const url = classSection
+      ? `${API_BASE}/v1/students?class_section=${encodeURIComponent(classSection)}`
+      : `${API_BASE}/v1/students`;
+    const res = await fetch(url, { headers });
+    if (res.ok) {
+      return (await res.json()) as StudentRow[];
+    }
+  } catch {
+    /* fallback */
+  }
+
   let query = supabase.from("students").select("id, reg_no, full_name");
   if (classSection) query = query.eq("class_section", classSection);
   const { data, error } = await query.order("reg_no");
@@ -52,6 +78,16 @@ export async function fetchStudents(classSection?: string): Promise<StudentRow[]
 }
 
 export async function fetchIntervals(sessionId: string): Promise<IntervalRow[]> {
+  try {
+    const headers = await authHeader();
+    const res = await fetch(`${API_BASE}/v1/sessions/${sessionId}/intervals`, { headers });
+    if (res.ok) {
+      return (await res.json()) as IntervalRow[];
+    }
+  } catch {
+    /* fallback */
+  }
+
   const { data, error } = await supabase
     .from("presence_intervals")
     .select("id, session_id, student_id, state, started_at, ended_at, via")

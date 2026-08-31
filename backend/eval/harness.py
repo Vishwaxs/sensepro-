@@ -32,10 +32,24 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from app.store import NoopWriter, ProctorFlagRow
 from proctor.engine import ProctorEngine
 
 Frame = tuple[np.ndarray, float]
 Windows = list[list[float]]
+
+
+class EvaluationWriter(NoopWriter):
+    """Accept candidate flags in memory without writing to an external store.
+
+    The live engine only emits rows acknowledged by its writer. Evaluation
+    still needs those rows for scoring, so its sink acknowledges them while
+    inheriting the no-network behavior of ``NoopWriter``.
+    """
+
+    def create_flag(self, row: ProctorFlagRow) -> bool:
+        del row
+        return True
 
 
 def iter_clip(path: str) -> Iterator[Frame]:

@@ -63,6 +63,20 @@ class StudentOut(BaseModel):
     seat_zone: str | None = None
 
 
+@router.get("", response_model=list[dict])
+def list_students_endpoint(
+    class_section: str | None = None,
+    authorization: str | None = Header(None),
+) -> list[dict]:
+    app_auth.require_role(authorization, app_auth.STAFF_AND_MANAGEMENT)
+    writer = _writer()
+    try:
+        students = writer.list_students(class_section)
+    finally:
+        writer.close()
+    return students
+
+
 @router.post("", status_code=201, response_model=StudentOut)
 async def create_student(
     body: StudentCreate,

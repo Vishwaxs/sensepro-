@@ -68,6 +68,7 @@ def test_healthz_reports_counts(monkeypatch):
     assert b["supabase_configured"] is True
     assert b["embeddings_count"] == 120
     assert b["roster_count"] == 53
+    assert b["session_tables_ready"] is True
     assert b["qr_tables_ready"] is True
 
 
@@ -82,3 +83,78 @@ def test_healthz_degrades_when_supabase_unreachable(monkeypatch):
     r = client.get("/healthz")
     assert r.status_code == 200  # diagnostic never 500s
     assert r.json()["status"] == "degraded"
+
+
+def test_readyz_rejects_unconfigured_persistence(monkeypatch):
+    monkeypatch.setattr(settings, "supabase_url", "")
+    monkeypatch.setattr(settings, "supabase_secret_key", "")
+
+    r = client.get("/readyz")
+
+    assert r.status_code == 503
+    body = r.json()
+    assert body["ready"] is False
+    assert "persistence_not_configured" in body["blockers"]
+
+
+def test_readyz_passes_when_models_persistence_and_schema_are_ready(monkeypatch):
+    monkeypatch.setattr(settings, "supabase_url", "http://x")
+    monkeypatch.setattr(settings, "supabase_secret_key", "k")
+    monkeypatch.setattr(settings, "clerk_secret_key", "sk_test_example")
+
+    class FakeW:
+        def count_rows(self, table, params=None):
+            return {"embeddings": 120, "students": 53}.get(table, 0)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("app.store.require_supabase_writer", lambda: FakeW())
+
+    r = client.get("/readyz")
+
+    assert r.status_code == 200
+    assert r.json()["ready"] is True
+    assert r.json()["blockers"] == []
+
+
+def test_readyz_rejects_missing_exam_schema(monkeypatch):
+    monkeypatch.setattr(settings, "supabase_url", "http://x")
+    monkeypatch.setattr(settings, "supabase_secret_key", "k")
+    monkeypatch.setattr(settings, "clerk_secret_key", "sk_test_example")
+
+    class FakeW:
+        def count_rows(self, table, params=None):
+            if table == "proctor_flags":
+                raise RuntimeError("relation missing")
+            return 0
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("app.store.require_supabase_writer", lambda: FakeW())
+
+    r = client.get("/readyz")
+
+    assert r.status_code == 503
+    assert "session_schema_unavailable" in r.json()["blockers"]
+
+
+def test_readyz_rejects_missing_clerk_backend_configuration(monkeypatch):
+    monkeypatch.setattr(settings, "supabase_url", "http://x")
+    monkeypatch.setattr(settings, "supabase_secret_key", "k")
+    monkeypatch.setattr(settings, "clerk_secret_key", "")
+
+    class FakeW:
+        def count_rows(self, table, params=None):
+            return 0
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("app.store.require_supabase_writer", lambda: FakeW())
+
+    r = client.get("/readyz")
+
+    assert r.status_code == 503
+    assert "clerk_backend_not_configured" in r.json()["blockers"]

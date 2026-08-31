@@ -36,9 +36,7 @@ DOWN_POSE = [*NEUTRAL_POSE[:2], (160.0, 145.0), *NEUTRAL_POSE[3:]]
 UP_POSE = [*NEUTRAL_POSE[:2], (160.0, 125.0), *NEUTRAL_POSE[3:]]
 
 
-def _frame(
-    *blocks: tuple[tuple[int, int, int, int], tuple[int, int, int]]
-) -> np.ndarray:
+def _frame(*blocks: tuple[tuple[int, int, int, int], tuple[int, int, int]]) -> np.ndarray:
     image = np.full((240, 320, 3), 255, dtype=np.uint8)
     for (x1, y1, x2, y2), colour in blocks:
         cv2.rectangle(image, (x1, y1), (x2, y2), colour, -1)
@@ -52,9 +50,7 @@ def _track(
     student_id: str = "s1",
     x_offset: float = 0.0,
 ) -> Track:
-    shifted = [
-        (x + x_offset, y) for x, y in (landmarks if landmarks is not None else [])
-    ]
+    shifted = [(x + x_offset, y) for x, y in (landmarks if landmarks is not None else [])]
     detection = Detection(
         130 + x_offset,
         90,
@@ -67,11 +63,13 @@ def _track(
 
 
 class FakeFlagWriter:
-    def __init__(self) -> None:
+    def __init__(self, persisted: bool | None = None) -> None:
         self.flags = []
+        self.persisted = persisted
 
-    def create_flag(self, row) -> None:
+    def create_flag(self, row) -> bool | None:
         self.flags.append(row)
+        return self.persisted
 
 
 def _engine(writer: FakeFlagWriter, cooldown_s: float = 30.0) -> ProctorEngine:
@@ -105,6 +103,17 @@ def test_phone_requires_persistence_then_creates_pending_review_flag() -> None:
     assert flag.review_status == "pending"
 
 
+def test_failed_flag_write_is_not_announced_and_does_not_start_cooldown() -> None:
+    writer = FakeFlagWriter(persisted=False)
+    engine = _engine(writer)
+    frame = _frame(*PHONE_NEAR_TRACK)
+
+    assert engine.observe(frame, [_track(LEVEL_EYES)], 1.0) == []
+    assert engine.observe(frame, [_track(LEVEL_EYES)], 2.0) == []
+    assert engine.observe(frame, [_track(LEVEL_EYES)], 3.0) == []
+    assert len(writer.flags) == 2
+
+
 def test_single_or_stale_phone_observation_never_becomes_candidate() -> None:
     writer = FakeFlagWriter()
     engine = _engine(writer)
@@ -121,9 +130,7 @@ def test_duplicate_phone_boxes_in_one_frame_count_as_one_observation() -> None:
     engine = _engine(writer)
     detection = ObjectDetection("cell phone", (200, 140, 240, 180), 0.95)
 
-    flags = engine.observe(
-        _frame(), [_track()], 1.0, detections=[detection, detection]
-    )
+    flags = engine.observe(_frame(), [_track()], 1.0, detections=[detection, detection])
     assert flags == []
     assert engine.confirmed_detections == []
     assert engine.observe(_frame(), [_track()], 1.0, detections=[detection]) == []
@@ -319,12 +326,8 @@ def test_head_pose_duration_is_isolated_per_track() -> None:
     blank = _frame()
     first_away = _track(YAW_RIGHT_POSE)
     first_neutral = _track(NEUTRAL_POSE)
-    second_away = _track(
-        YAW_LEFT_POSE, track_id=2, student_id="s2", x_offset=100.0
-    )
-    second_neutral = _track(
-        NEUTRAL_POSE, track_id=2, student_id="s2", x_offset=100.0
-    )
+    second_away = _track(YAW_LEFT_POSE, track_id=2, student_id="s2", x_offset=100.0)
+    second_neutral = _track(NEUTRAL_POSE, track_id=2, student_id="s2", x_offset=100.0)
 
     assert engine.observe(blank, [first_away, second_neutral], 0.0) == []
     assert engine.observe(blank, [first_neutral, second_away], 1.0) == []

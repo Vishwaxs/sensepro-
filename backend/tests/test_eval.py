@@ -7,8 +7,7 @@ from datetime import UTC, datetime
 import cv2
 import numpy as np
 
-from app.store import NoopWriter
-from eval.harness import ProctorResult, eval_presence, eval_proctor, fp_reduction
+from eval.harness import EvaluationWriter, ProctorResult, eval_presence, eval_proctor, fp_reduction
 from proctor.detector import StubProctorDetector
 from proctor.engine import ProctorEngine
 from proctor.suppression import GazeSuppressor
@@ -77,7 +76,7 @@ def _eval_engine(filter_on: bool) -> ProctorEngine:
     return ProctorEngine(
         detector=StubProctorDetector(),
         suppressor=GazeSuppressor(window_s=10.0, pitch_down_deg=-25.0 if filter_on else -1e9),
-        writer=NoopWriter(),
+        writer=EvaluationWriter(),
         session_id="eval",
         session_start=datetime.now(UTC),
         cooldown_s=0.0,  # eval counts every candidate

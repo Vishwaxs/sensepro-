@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.settings_api import STAFF_ROLES, _require_role
+from app.store import SupabaseNotConfigured, require_supabase_writer
 
 logger = logging.getLogger("sensepro.rtsp_api")
 
@@ -73,6 +74,16 @@ def _remember_status(session_id: str, entry: dict[str, Any]) -> None:
         _recent.pop(oldest, None)
 
 
+@router.get("/capabilities")
+def rtsp_capabilities(authorization: str | None = Header(None)) -> dict[str, object]:
+    """Expose RTSP availability without returning the private camera URL."""
+    _require_role(authorization, STAFF_ROLES)
+    return {
+        "configured": bool(settings.rtsp_url),
+        "label": "Backend RTSP camera",
+    }
+
+
 @router.post("/start", status_code=200)
 def start_rtsp(body: RtspStartRequest, authorization: str | None = Header(None)) -> dict:
     """Start one mode-aware RTSP worker for an existing class session."""
@@ -81,6 +92,25 @@ def start_rtsp(body: RtspStartRequest, authorization: str | None = Header(None))
     url = settings.rtsp_url
     if not url:
         raise HTTPException(status_code=400, detail="RTSP_URL not configured in backend .env")
+
+    if body.mode in {"exam", "workshop"}:
+        validation_writer = None
+        try:
+            validation_writer = require_supabase_writer()
+            session = validation_writer.get_session(body.session_id)
+        except SupabaseNotConfigured as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Session validation unavailable") from exc
+        finally:
+            if validation_writer is not None:
+                validation_writer.close()
+        if session is None:
+            raise HTTPException(status_code=404, detail="Class session not found")
+        if session.get("mode") != body.mode:
+            raise HTTPException(status_code=409, detail="Class session belongs to another mode")
+        if session.get("ends_at") is not None:
+            raise HTTPException(status_code=409, detail="Class session has already ended")
 
     with _lock:
         if body.session_id in _active:
@@ -107,7 +137,7 @@ def start_rtsp(body: RtspStartRequest, authorization: str | None = Header(None))
         try:
             # Local imports keep API startup cheap and avoid loading vision or
             # camera dependencies until an authenticated operator starts RTSP.
-            from app.store import SessionRecorder, build_writer
+            from app.store import SessionRecorder, build_writer, require_supabase_writer
             from capture.rtsp_source import RtspSource, mask_rtsp_url
             from capture.run_session import (
                 _load_store,
@@ -125,7 +155,7 @@ def start_rtsp(body: RtspStartRequest, authorization: str | None = Header(None))
                 attendance_threshold=settings.attendance_sighting_threshold,
                 max_reid_per_frame=settings.max_reid_per_frame,
             )
-            writer = build_writer()
+            writer = build_writer() if body.mode == "lecture" else require_supabase_writer()
             session_start = datetime.now(UTC)
             recorder = (
                 SessionRecorder(
@@ -136,11 +166,7 @@ def start_rtsp(body: RtspStartRequest, authorization: str | None = Header(None))
                 if body.mode == "lecture"
                 else None
             )
-            fps = (
-                settings.sample_fps_exam
-                if body.mode == "exam"
-                else settings.sample_fps_lecture
-            )
+            fps = settings.sample_fps_exam if body.mode == "exam" else settings.sample_fps_lecture
             observers, aggregator = build_observers(
                 mode=body.mode,
                 pipeline=pipeline,
@@ -357,9 +383,7 @@ def rtsp_feed(authorization: str | None = Header(None), token: str | None = None
                     if ok:
                         yield (
                             b"--frame\r\n"
-                            b"Content-Type: image/jpeg\r\n\r\n"
-                            + jpeg.tobytes()
-                            + b"\r\n"
+                            b"Content-Type: image/jpeg\r\n\r\n" + jpeg.tobytes() + b"\r\n"
                         )
                 time.sleep(0.05)
         except GeneratorExit:

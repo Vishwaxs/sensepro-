@@ -1,11 +1,26 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { ShieldAlert, Check, X, ChevronRight, AlertTriangle, WifiOff } from "lucide-react";
-import { AnimatePresence, motion } from "framer-motion";
+import {
+  Check,
+  ChevronRight,
+  Clock3,
+  EyeOff,
+  RefreshCw,
+  ShieldAlert,
+  UserRoundSearch,
+  WifiOff,
+  X,
+} from "lucide-react";
 import { toast } from "sonner";
 import { guardRoute } from "@/lib/auth-guard";
 import { fetchStudents } from "@/lib/data/roster";
-import { fetchExamSessions, fetchFlags, reviewFlag, subscribeFlags } from "@/lib/data/proctor";
+import {
+  fetchExamSession,
+  fetchExamSessions,
+  fetchFlags,
+  reviewFlag,
+  subscribeFlags,
+} from "@/lib/data/proctor";
 import type { ExamSessionRow, ProctorFlagRow, FlagType } from "@/lib/data/proctor";
 
 export const Route = createFileRoute("/_shell/proctor")({
@@ -26,60 +41,97 @@ const TYPE_LABELS: Record<FlagType, string> = {
   other: "Candidate event",
 };
 
+const STATUS_LABELS: Record<ProctorFlagRow["review_status"], string> = {
+  pending: "Awaiting review",
+  dismissed: "Dismissed",
+  upheld: "Follow-up requested",
+};
+
+function formatSessionOption(row: ExamSessionRow): string {
+  const subject = row.subject ?? "Examination";
+  const started = new Date(row.starts_at).toLocaleString([], {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+  return `${subject} · ${row.class_section} · ${started} · ${row.ends_at ? "completed" : "live"}`;
+}
+
+function candidateLabel(flag: ProctorFlagRow, names: Map<string, string>): string {
+  if (!flag.student_id) return "Unattributed track";
+  return names.get(flag.student_id) ?? "Unresolved candidate record";
+}
+
 function ProctorPage() {
   const { session_id: requestedSessionId } = Route.useSearch();
-  const [load, setLoad] = useState<"loading" | "ready" | "error">("loading");
+  const [pageLoad, setPageLoad] = useState<"loading" | "ready" | "error">("loading");
+  const [queueLoad, setQueueLoad] = useState<"loading" | "ready" | "error">("loading");
   const [sessions, setSessions] = useState<ExamSessionRow[]>([]);
   const [session, setSession] = useState<ExamSessionRow | null>(null);
+  const [requestedMissing, setRequestedMissing] = useState(false);
   const [names, setNames] = useState<Map<string, string>>(new Map());
   const [flags, setFlags] = useState<ProctorFlagRow[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
+  const [view, setView] = useState<"pending" | "reviewed">("pending");
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [pageRevision, setPageRevision] = useState(0);
+  const [queueRevision, setQueueRevision] = useState(0);
 
   useEffect(() => {
     let mounted = true;
+    setPageLoad("loading");
     (async () => {
       try {
-        const [examSessions, students] = await Promise.all([fetchExamSessions(), fetchStudents()]);
+        const [examSessions, requestedSession, students] = await Promise.all([
+          fetchExamSessions(),
+          requestedSessionId ? fetchExamSession(requestedSessionId) : Promise.resolve(null),
+          fetchStudents(),
+        ]);
         if (!mounted) return;
-        setSessions(examSessions);
+        const listedSessions =
+          requestedSession && !examSessions.some((row) => row.id === requestedSession.id)
+            ? [requestedSession, ...examSessions]
+            : examSessions;
+        setSessions(listedSessions);
+        setRequestedMissing(!!requestedSessionId && !requestedSession);
         setSession(
-          examSessions.find((row) => row.id === requestedSessionId) ??
-            examSessions.find((row) => row.ends_at === null) ??
-            examSessions[0] ??
-            null,
+          requestedSessionId
+            ? requestedSession
+            : (listedSessions.find((row) => row.ends_at === null) ?? listedSessions[0] ?? null),
         );
         setNames(new Map(students.map((s) => [s.id, s.full_name])));
-        setLoad("ready");
+        setPageLoad("ready");
       } catch {
-        if (mounted) setLoad("error");
+        if (mounted) setPageLoad("error");
       }
     })();
     return () => {
       mounted = false;
     };
-  }, [requestedSessionId]);
+  }, [pageRevision, requestedSessionId]);
 
   useEffect(() => {
     if (!session) {
       setFlags([]);
+      setQueueLoad("ready");
       return;
     }
     let cancelled = false;
-    setLoad("loading");
+    setSelected(null);
+    setQueueLoad("loading");
     fetchFlags(session.id)
       .then((rows) => {
         if (!cancelled) {
           setFlags(rows);
-          setLoad("ready");
+          setQueueLoad("ready");
         }
       })
       .catch(() => {
-        if (!cancelled) setLoad("error");
+        if (!cancelled) setQueueLoad("error");
       });
     return () => {
       cancelled = true;
     };
-  }, [session]);
+  }, [queueRevision, session]);
 
   useEffect(() => {
     if (!session) return;
@@ -95,15 +147,23 @@ function ProctorPage() {
   }, [session]);
 
   const pending = useMemo(() => flags.filter((f) => f.review_status === "pending"), [flags]);
-  const current = flags.find((f) => f.id === selected) ?? pending[0];
+  const reviewed = useMemo(() => flags.filter((f) => f.review_status !== "pending"), [flags]);
+  const visibleFlags = view === "pending" ? pending : reviewed;
+  const current = visibleFlags.find((f) => f.id === selected) ?? visibleFlags[0];
 
   async function resolve(id: string, verdict: "dismissed" | "upheld") {
+    if (busyId) return;
+    setBusyId(id);
     try {
-      await reviewFlag(id, verdict);
+      if (!session) throw new Error("No examination session is selected");
+      await reviewFlag(session.id, id, verdict);
       setFlags((prev) => prev.map((f) => (f.id === id ? { ...f, review_status: verdict } : f)));
       if (selected === id) setSelected(null);
+      toast.success(verdict === "dismissed" ? "Event dismissed" : "Follow-up requested");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Review failed");
+    } finally {
+      setBusyId(null);
     }
   }
 
@@ -111,176 +171,301 @@ function ProctorPage() {
     <div className="space-y-6">
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--muted)]">
-            Examination · human-in-the-loop
+          <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--warn)]">
+            Examination · human review
           </div>
           <h2 className="mt-1 font-display text-2xl font-extrabold tracking-tight text-[color:var(--ink)]">
-            Proctor review queue
+            Proctor event desk
           </h2>
-          <p className="mt-1 text-sm text-[color:var(--muted)]">
-            Every event requires human review. The system flags — you decide. No automated verdicts.
+          <p className="mt-1 max-w-2xl text-sm text-[color:var(--muted)]">
+            Device, additional-person, and sustained head-pose events require a teacher decision. No
+            event creates an automatic misconduct verdict or penalty.
           </p>
         </div>
-        {sessions.length > 0 && (
-          <label className="grid gap-1 font-mono-nums text-[10px] uppercase tracking-wider text-[color:var(--muted)]">
+        {pageLoad === "ready" && sessions.length > 0 ? (
+          <label className="grid w-full gap-1 font-mono-nums text-[10px] uppercase tracking-wider text-[color:var(--muted)] sm:w-auto">
             Exam session
             <select
               value={session?.id ?? ""}
-              onChange={(event) =>
-                setSession(sessions.find((row) => row.id === event.target.value) ?? null)
-              }
-              className="sp-focus h-12 min-w-64 rounded-md border border-[color:var(--line)] bg-[color:var(--surface-2)] px-3 text-xs normal-case tracking-normal text-[color:var(--ink)]"
+              onChange={(event) => {
+                setView("pending");
+                setSession(sessions.find((row) => row.id === event.target.value) ?? null);
+              }}
+              className="sp-focus h-12 w-full min-w-0 rounded-md border border-[color:var(--line)] bg-[color:var(--surface-2)] px-3 text-xs normal-case tracking-normal text-[color:var(--ink)] sm:max-w-[460px]"
             >
               {sessions.map((row) => (
                 <option key={row.id} value={row.id}>
-                  {row.subject ?? row.class_section} · {row.ends_at ? "completed" : "live"}
+                  {formatSessionOption(row)}
                 </option>
               ))}
             </select>
           </label>
-        )}
+        ) : null}
       </header>
 
-      {load === "loading" ? (
-        <div className="glass-panel grid h-56 place-items-center font-mono text-[12.5px] text-[color:var(--muted)]">
-          loading…
+      {pageLoad === "loading" ? (
+        <div className="glass-panel grid h-56 place-items-center font-mono-nums text-xs text-[color:var(--muted)]">
+          Loading examination sessions…
         </div>
-      ) : load === "error" ? (
-        <div className="glass-panel flex flex-col items-center justify-center gap-2 py-16 text-center text-[color:var(--muted)]">
+      ) : pageLoad === "error" ? (
+        <div className="glass-panel flex flex-col items-center justify-center gap-3 py-16 text-center text-[color:var(--muted)]">
           <WifiOff className="h-8 w-8 opacity-50" />
           <div className="font-display text-lg font-medium text-[color:var(--ink)]">
-            Could not load the proctor queue
+            Could not load examination sessions
           </div>
-          <p className="text-sm">Check your connection and role, then refresh.</p>
+          <p className="text-sm">No different examination was substituted.</p>
+          <button
+            type="button"
+            onClick={() => setPageRevision((revision) => revision + 1)}
+            className="inline-flex min-h-11 items-center gap-2 rounded-md bg-[color:var(--primary)] px-4 text-sm font-semibold text-white transition-colors hover:bg-[color:var(--primary-deep)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)]"
+          >
+            <RefreshCw className="h-4 w-4" /> Retry
+          </button>
         </div>
       ) : !session ? (
         <div className="glass-panel flex flex-col items-center justify-center gap-2 py-16 text-center text-[color:var(--muted)]">
           <ShieldAlert className="h-8 w-8 opacity-50" />
           <div className="font-display text-lg font-medium text-[color:var(--ink)]">
-            No examination session
+            {requestedMissing ? "Examination session not found" : "No examination session"}
           </div>
-          <p className="text-sm">Start an exam from Capture to begin the review record.</p>
+          <p className="max-w-lg text-sm">
+            {requestedMissing
+              ? "The requested record is unavailable or is not an examination session. No other exam was substituted."
+              : "Start an exam from Capture to create a proctor review record."}
+          </p>
+        </div>
+      ) : queueLoad === "loading" ? (
+        <div className="glass-panel grid h-56 place-items-center font-mono-nums text-xs text-[color:var(--muted)]">
+          Loading proctor events…
+        </div>
+      ) : queueLoad === "error" ? (
+        <div className="glass-panel flex flex-col items-center justify-center gap-3 py-16 text-center text-[color:var(--muted)]">
+          <WifiOff className="h-8 w-8 opacity-50" />
+          <div className="font-display text-lg font-medium text-[color:var(--ink)]">
+            Could not load this examination queue
+          </div>
+          <p className="text-sm">Retained events are hidden until this session refreshes.</p>
+          <button
+            type="button"
+            onClick={() => setQueueRevision((revision) => revision + 1)}
+            className="inline-flex min-h-11 items-center gap-2 rounded-md bg-[color:var(--primary)] px-4 text-sm font-semibold text-white transition-colors hover:bg-[color:var(--primary-deep)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)]"
+          >
+            <RefreshCw className="h-4 w-4" /> Retry queue
+          </button>
         </div>
       ) : (
-        <div className="grid gap-6 lg:grid-cols-[340px_1fr]">
-          {/* Flag list */}
-          <div className="glass-panel overflow-hidden">
-            <div className="border-b border-[color:var(--line)] px-4 py-3">
-              <div className="font-mono-nums text-[10px] uppercase tracking-[0.22em] text-[color:var(--muted)]">
-                {pending.length} pending review
+        <div className="grid gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
+          <aside className="glass-panel min-w-0 overflow-hidden">
+            <div className="border-b border-[color:var(--line)] p-3">
+              <div className="grid grid-cols-2 gap-2" role="tablist" aria-label="Proctor events">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={view === "pending"}
+                  onClick={() => {
+                    setView("pending");
+                    setSelected(null);
+                  }}
+                  className={`sp-focus min-h-11 rounded-md border px-3 font-mono-nums text-[11px] uppercase tracking-wider transition-colors ${
+                    view === "pending"
+                      ? "border-[color:var(--warn)]/50 bg-[color:var(--warn)]/10 text-[color:var(--warn)]"
+                      : "border-[color:var(--line)] text-[color:var(--muted)] hover:text-[color:var(--ink)]"
+                  }`}
+                >
+                  Awaiting · {pending.length}
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={view === "reviewed"}
+                  onClick={() => {
+                    setView("reviewed");
+                    setSelected(null);
+                  }}
+                  className={`sp-focus min-h-11 rounded-md border px-3 font-mono-nums text-[11px] uppercase tracking-wider transition-colors ${
+                    view === "reviewed"
+                      ? "border-[color:var(--primary)]/50 bg-[color:var(--primary)]/10 text-[color:var(--primary)]"
+                      : "border-[color:var(--line)] text-[color:var(--muted)] hover:text-[color:var(--ink)]"
+                  }`}
+                >
+                  Reviewed · {reviewed.length}
+                </button>
               </div>
             </div>
-            <div className="max-h-[65vh] overflow-y-auto">
-              <AnimatePresence>
-                {pending.map((f) => (
-                    <motion.button
-                      key={f.id}
-                      layout
-                      initial={{ opacity: 0, x: -20 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      exit={{ opacity: 0, x: 20, height: 0 }}
-                      onClick={() => setSelected(f.id)}
-                      className={`sp-focus w-full border-b border-[color:var(--line)]/50 px-4 py-3 text-left transition-colors ${
-                        current?.id === f.id
-                          ? "bg-[color:var(--surface-2)]"
-                          : "hover:bg-[color:var(--surface-2)]/50"
-                      }`}
+
+            <div className="max-h-[55vh] overflow-y-auto xl:max-h-[68vh]" role="tabpanel">
+              {visibleFlags.map((flag) => (
+                <button
+                  key={flag.id}
+                  type="button"
+                  onClick={() => setSelected(flag.id)}
+                  className={`sp-focus w-full border-b border-[color:var(--line)]/50 px-4 py-3 text-left transition-colors ${
+                    current?.id === flag.id
+                      ? "bg-[color:var(--surface-2)]"
+                      : "hover:bg-[color:var(--surface-2)]/50"
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <span className="flex min-w-0 items-center gap-2 text-sm font-medium text-[color:var(--ink)]">
+                      <ShieldAlert
+                        className={`h-3.5 w-3.5 shrink-0 ${
+                          flag.review_status === "pending"
+                            ? "text-[color:var(--warn)]"
+                            : "text-[color:var(--muted)]"
+                        }`}
+                      />
+                      <span className="truncate">{candidateLabel(flag, names)}</span>
+                    </span>
+                    <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[color:var(--muted)]" />
+                  </div>
+                  <div className="mt-1 text-xs text-[color:var(--muted)]">
+                    {TYPE_LABELS[flag.flag_type]}
+                  </div>
+                  <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2 font-mono-nums text-[10px] uppercase tracking-wider text-[color:var(--muted)]">
+                    <time dateTime={flag.flagged_at}>
+                      {new Date(flag.flagged_at).toLocaleTimeString()}
+                    </time>
+                    <span
+                      className={
+                        flag.review_status === "pending"
+                          ? "text-[color:var(--warn)]"
+                          : flag.review_status === "upheld"
+                            ? "text-[color:var(--bad)]"
+                            : "text-[color:var(--ok)]"
+                      }
                     >
-                      <div className="flex items-center justify-between">
-                        <span className="flex items-center gap-2 text-sm font-medium text-[color:var(--ink)]">
-                          <ShieldAlert className="h-3.5 w-3.5 text-[color:var(--warn)]" />
-                          {f.student_id
-                            ? (names.get(f.student_id) ?? "Unknown student")
-                            : "Unattributed"}
-                        </span>
-                        <ChevronRight className="h-3.5 w-3.5 text-[color:var(--muted)]" />
-                      </div>
-                      <div className="mt-1 flex items-center gap-2 text-xs text-[color:var(--muted)]">
-                        <span className="font-mono-nums">
-                          {new Date(f.flagged_at).toLocaleTimeString()}
-                        </span>
-                        <span>·</span>
-                        <span>{TYPE_LABELS[f.flag_type]}</span>
-                      </div>
-                      <div className="mt-1.5">
-                        <span className="inline-flex items-center rounded-full border border-[color:var(--warn)]/40 bg-[color:var(--warn)]/10 px-2 py-0.5 font-mono-nums text-[10px] uppercase tracking-[0.16em] text-[color:var(--warn)]">
-                          review event
-                        </span>
-                      </div>
-                    </motion.button>
-                  ))}
-              </AnimatePresence>
-              {pending.length === 0 && (
+                      {STATUS_LABELS[flag.review_status]}
+                    </span>
+                  </div>
+                </button>
+              ))}
+
+              {visibleFlags.length === 0 ? (
                 <div className="px-4 py-12 text-center">
                   <Check className="mx-auto h-8 w-8 text-[color:var(--ok)]" />
-                  <p className="mt-2 text-sm text-[color:var(--muted)]">All flags reviewed</p>
+                  <p className="mt-2 text-sm text-[color:var(--muted)]">
+                    {view === "pending"
+                      ? "No events are awaiting review"
+                      : "No review decisions recorded"}
+                  </p>
                 </div>
-              )}
+              ) : null}
             </div>
-          </div>
+          </aside>
 
-          {/* Detail panel */}
-          <div className="glass-panel p-6">
+          <section className="glass-panel min-w-0 p-5 sm:p-6">
             {current ? (
               <div>
-                <div className="flex items-start justify-between">
+                <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <div className="font-mono-nums text-[10px] uppercase tracking-[0.22em] text-[color:var(--muted)]">
-                      {current.id.slice(0, 8)}
+                      Event {current.id.slice(0, 8)}
                     </div>
                     <h3 className="mt-1 font-display text-xl font-extrabold tracking-tight text-[color:var(--ink)]">
                       {TYPE_LABELS[current.flag_type]}
                     </h3>
                     <p className="mt-1 text-sm text-[color:var(--muted)]">
-                      Flagged for{" "}
-                      {current.student_id
-                        ? (names.get(current.student_id) ?? "Unknown student")
-                        : "an unattributed track"}{" "}
-                      at {new Date(current.flagged_at).toLocaleTimeString()}
+                      Candidate event metadata for teacher review.
                     </p>
                   </div>
-                  <span className="inline-flex items-center gap-1.5 rounded-md border border-[color:var(--warn)]/40 bg-[color:var(--warn)]/10 px-2.5 py-1 font-mono-nums text-[10px] uppercase tracking-[0.16em] text-[color:var(--warn)]">
-                    awaiting review
+                  <span
+                    className={`inline-flex min-h-8 items-center rounded-md border px-2.5 py-1 font-mono-nums text-[10px] uppercase tracking-[0.16em] ${
+                      current.review_status === "pending"
+                        ? "border-[color:var(--warn)]/40 bg-[color:var(--warn)]/10 text-[color:var(--warn)]"
+                        : current.review_status === "upheld"
+                          ? "border-[color:var(--bad)]/40 bg-[color:var(--bad)]/10 text-[color:var(--bad)]"
+                          : "border-[color:var(--ok)]/40 bg-[color:var(--ok)]/10 text-[color:var(--ok)]"
+                    }`}
+                  >
+                    {STATUS_LABELS[current.review_status]}
                   </span>
                 </div>
 
-                <div className="mt-6 grid place-items-center rounded-xl border border-dashed border-[color:var(--line)]/70 bg-[color:var(--surface)]/50 py-20">
-                  <AlertTriangle className="h-8 w-8 text-[color:var(--warn)]" />
-                  <p className="mt-2 max-w-xs text-center font-mono-nums text-[11px] text-[color:var(--muted)]">
-                    No image is stored for this flag — frames are processed in memory and never
-                    persisted, so there is nothing to show here by design.
-                  </p>
+                <dl className="mt-6 grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-md border border-[color:var(--line)] bg-[color:var(--surface-2)] p-4">
+                    <dt className="flex items-center gap-2 font-mono-nums text-[10px] uppercase tracking-wider text-[color:var(--muted)]">
+                      <UserRoundSearch className="h-4 w-4" /> Candidate attribution
+                    </dt>
+                    <dd className="mt-2 text-sm font-medium text-[color:var(--ink)]">
+                      {candidateLabel(current, names)}
+                    </dd>
+                  </div>
+                  <div className="rounded-md border border-[color:var(--line)] bg-[color:var(--surface-2)] p-4">
+                    <dt className="flex items-center gap-2 font-mono-nums text-[10px] uppercase tracking-wider text-[color:var(--muted)]">
+                      <Clock3 className="h-4 w-4" /> Detected
+                    </dt>
+                    <dd className="mt-2 text-sm font-medium text-[color:var(--ink)]">
+                      <time dateTime={current.flagged_at}>
+                        {new Date(current.flagged_at).toLocaleString()}
+                      </time>
+                    </dd>
+                  </div>
+                </dl>
+
+                <div className="mt-4 rounded-md border border-[color:var(--line)] bg-[color:var(--surface)] p-4">
+                  <div className="flex items-start gap-3">
+                    <EyeOff className="mt-0.5 h-5 w-5 shrink-0 text-[color:var(--accent)]" />
+                    <div>
+                      <h4 className="text-sm font-semibold text-[color:var(--ink)]">
+                        Event metadata only
+                      </h4>
+                      <p className="mt-1 text-sm leading-relaxed text-[color:var(--muted)]">
+                        Camera frames are processed in memory and discarded. Use the event time,
+                        live supervision, and exam context when reviewing; this record alone does
+                        not prove misconduct.
+                      </p>
+                    </div>
+                  </div>
                 </div>
 
-                <div className="mt-4 rounded-md border border-[color:var(--warn)]/30 bg-[color:var(--warn)]/5 p-3 text-xs text-[color:var(--warn)]">
-                  <strong>Reminder:</strong> This flag is a suggestion, not a verdict. Only you can
-                  escalate or dismiss.
-                </div>
-
-                <div className="mt-6 flex flex-wrap gap-3">
-                  <button
-                    onClick={() => void resolve(current.id, "dismissed")}
-                    className="sp-btn sp-btn-secondary"
-                  >
-                    <X className="h-4 w-4" /> Dismiss
-                  </button>
-                  <button
-                    onClick={() => void resolve(current.id, "upheld")}
-                    className="sp-btn sp-btn-destructive"
-                  >
-                    <ShieldAlert className="h-4 w-4" /> Uphold flag
-                  </button>
-                </div>
+                {current.review_status === "pending" ? (
+                  <div className="mt-6 rounded-md border border-[color:var(--warn)]/30 bg-[color:var(--warn)]/5 p-4">
+                    <p className="text-xs leading-relaxed text-[color:var(--warn)]">
+                      A review decision records how this event should be handled. It does not apply
+                      a penalty automatically.
+                    </p>
+                    <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+                      <button
+                        type="button"
+                        onClick={() => void resolve(current.id, "dismissed")}
+                        disabled={busyId !== null}
+                        className="sp-btn sp-btn-secondary min-h-11 disabled:cursor-wait disabled:opacity-60"
+                      >
+                        <X className="h-4 w-4" /> Dismiss event
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void resolve(current.id, "upheld")}
+                        disabled={busyId !== null}
+                        className="sp-btn sp-btn-destructive min-h-11 disabled:cursor-wait disabled:opacity-60"
+                      >
+                        <ShieldAlert className="h-4 w-4" /> Retain for follow-up
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-6 rounded-md border border-[color:var(--line)] bg-[color:var(--surface-2)] p-4 text-sm text-[color:var(--muted)]">
+                    Decision recorded as {STATUS_LABELS[current.review_status].toLowerCase()}
+                    {current.reviewed_at
+                      ? ` on ${new Date(current.reviewed_at).toLocaleString()}`
+                      : ""}
+                    . This review outcome is not an automatic penalty.
+                  </div>
+                )}
               </div>
             ) : (
-              <div className="flex h-full min-h-[300px] items-center justify-center text-center">
+              <div className="flex h-full min-h-[320px] items-center justify-center text-center">
                 <div>
                   <Check className="mx-auto h-10 w-10 text-[color:var(--ok)]" />
-                  <p className="mt-3 text-sm text-[color:var(--muted)]">Select a flag to review</p>
+                  <p className="mt-3 text-sm text-[color:var(--muted)]">
+                    {view === "pending"
+                      ? "No event is awaiting review"
+                      : "No reviewed event selected"}
+                  </p>
                 </div>
               </div>
             )}
-          </div>
+          </section>
         </div>
       )}
     </div>

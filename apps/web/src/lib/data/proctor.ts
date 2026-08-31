@@ -1,10 +1,9 @@
-/** Proctor review queue: direct RLS reads + Realtime on proctor_flags, and
- *  the one staff write this app makes — moving a flag through review_status.
- *  Language rule: a pending flag is "awaiting review". Nothing here (or
- *  anywhere) auto-decides; the trigger + column-scoped grant in migrations
- *  0002/0006/0007 hold staff writes to exactly the review columns. */
+/** Proctor review queue: verified backend reads/writes plus Supabase Realtime.
+ *  A pending flag is "awaiting review". Nothing here (or anywhere)
+ *  auto-decides; every decision remains a staff-authenticated review action. */
 
 import { supabase } from "@/lib/supabase";
+import { API_BASE, authHeader } from "@/lib/api";
 
 export type FlagType = "phone" | "extra_person" | "head_pose" | "other";
 export type ReviewStatus = "pending" | "dismissed" | "upheld";
@@ -21,9 +20,6 @@ export interface ProctorFlagRow {
   reviewed_at: string | null;
 }
 
-const COLUMNS =
-  "id, session_id, student_id, flag_type, suppressed, flagged_at, review_status, reviewed_by, reviewed_at";
-
 export interface ExamSessionRow {
   id: string;
   class_section: string;
@@ -33,44 +29,47 @@ export interface ExamSessionRow {
   ends_at: string | null;
 }
 
-export async function fetchExamSessions(limit = 20): Promise<ExamSessionRow[]> {
-  const { data, error } = await supabase
-    .from("class_sessions")
-    .select("id, class_section, subject, mode, starts_at, ends_at")
-    .eq("mode", "exam")
-    .order("starts_at", { ascending: false })
-    .limit(limit);
-  if (error) throw error;
-  return (data ?? []) as ExamSessionRow[];
+export async function fetchExamSessions(limit = 50): Promise<ExamSessionRow[]> {
+  const headers = await authHeader();
+  const response = await fetch(`${API_BASE}/v1/sessions?limit=${limit}&mode=exam`, { headers });
+  if (!response.ok) throw new Error(`Could not load examinations (${response.status})`);
+  return ((await response.json()) as ExamSessionRow[]).filter((row) => row.mode === "exam");
+}
+
+export async function fetchExamSession(sessionId: string): Promise<ExamSessionRow | null> {
+  const rows = await fetchExamSessions();
+  return rows.find((row) => row.id === sessionId) ?? null;
 }
 
 export async function fetchFlags(sessionId: string): Promise<ProctorFlagRow[]> {
-  const { data, error } = await supabase
-    .from("proctor_flags")
-    .select(COLUMNS)
-    .eq("session_id", sessionId)
-    .eq("suppressed", false)
-    .order("flagged_at", { ascending: false });
-  if (error) throw error;
-  return data ?? [];
+  const headers = await authHeader();
+  const response = await fetch(`${API_BASE}/v1/sessions/${sessionId}/proctor-flags`, { headers });
+  if (!response.ok) throw new Error(`Could not load proctor events (${response.status})`);
+  return (await response.json()) as ProctorFlagRow[];
 }
 
-/** A human review. Sets who and when alongside the status — the only three
- *  columns staff may touch. */
+/** A human review. The backend stamps the verified reviewer and server time. */
 export async function reviewFlag(
+  sessionId: string,
   id: string,
   status: Exclude<ReviewStatus, "pending">,
 ): Promise<void> {
-  const { data, error } = await supabase
-    .from("proctor_flags")
-    .update({ review_status: status })
-    .eq("id", id)
-    .eq("review_status", "pending")
-    .eq("suppressed", false)
-    .select("id")
-    .maybeSingle();
-  if (error) throw error;
-  if (!data) throw new Error("This event was already reviewed or is no longer available.");
+  const headers = await authHeader();
+  const response = await fetch(`${API_BASE}/v1/sessions/${sessionId}/proctor-flags/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify({ review_status: status }),
+  });
+  if (response.ok) return;
+
+  let message = `Review failed (${response.status})`;
+  try {
+    const payload = (await response.json()) as { detail?: string };
+    if (payload.detail) message = payload.detail;
+  } catch {
+    // Keep the status-based message when the backend did not return JSON.
+  }
+  throw new Error(message);
 }
 
 /** Live queue for one session; returns an unsubscribe fn (same pattern as

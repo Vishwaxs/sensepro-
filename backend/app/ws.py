@@ -29,7 +29,12 @@ from fastapi.concurrency import run_in_threadpool
 
 from app import auth as app_auth
 from app.config import settings
-from app.store import SessionRecorder, build_writer
+from app.store import (
+    SessionRecorder,
+    SupabaseNotConfigured,
+    build_writer,
+    require_supabase_writer,
+)
 from engagement.signals import SignalExtractor
 from engagement.vnei import ZONES, ZoneAggregator, live_engagement_view
 from proctor.detector import ObjectDetection, ObjectDetector, build_proctor_detector
@@ -167,6 +172,45 @@ async def capture(ws: WebSocket) -> None:
         logger.info("capture socket rejected: unsupported mode %s", mode)
         return
 
+    requested_session_id = ws.query_params.get("session_id")
+    validated_writer = None
+    if mode in {"exam", "workshop"}:
+        if not requested_session_id:
+            await ws.close(code=1008, reason=f"{mode} capture requires a persisted session")
+            logger.info("capture socket rejected: %s session_id missing", mode)
+            return
+        try:
+            validated_writer = await run_in_threadpool(require_supabase_writer)
+            persisted_session = await run_in_threadpool(
+                validated_writer.get_session,
+                requested_session_id,
+            )
+        except SupabaseNotConfigured:
+            await ws.close(code=1013, reason="session persistence unavailable")
+            logger.warning("capture socket rejected: persistence unavailable for %s", mode)
+            return
+        except Exception as exc:  # noqa: BLE001 - fail the handshake closed
+            if validated_writer is not None:
+                await run_in_threadpool(validated_writer.close)
+            await ws.close(code=1013, reason="session validation unavailable")
+            logger.warning("capture session validation failed: %s", exc)
+            return
+        if (
+            persisted_session is None
+            or persisted_session.get("mode") != mode
+            or persisted_session.get("ends_at") is not None
+        ):
+            await run_in_threadpool(validated_writer.close)
+            await ws.close(
+                code=1008, reason="session is missing, ended, or belongs to another mode"
+            )
+            logger.info(
+                "capture socket rejected: invalid %s session %s",
+                mode,
+                requested_session_id,
+            )
+            return
+
     await ws.accept()
     pipe = SessionPipeline(
         store=_load_store(),
@@ -179,7 +223,7 @@ async def capture(ws: WebSocket) -> None:
     # A session_id (query param or in a message) attaches presence writes to a
     # real class_sessions row. Without one, recognition still runs but nothing
     # persists — useful for the offline stub loop.
-    session_writer = None
+    session_writer = validated_writer
     attached_session_id: str | None = None
     recorder: SessionRecorder | None = None
     qr: _QRVerifier | None = None
@@ -370,23 +414,25 @@ async def capture(ws: WebSocket) -> None:
 
     def _attach(session_id: str | None) -> None:
         nonlocal session_writer, attached_session_id, recorder, qr
-        if session_id and session_writer is None:
+        if not session_id or attached_session_id is not None:
+            return
+        if session_writer is None:
             session_writer = build_writer()
-            attached_session_id = session_id
-            # Exam and workshop need recognition/tracks for their own signals,
-            # but they are not attendance modules and must not write presence.
-            if mode == "lecture":
-                recorder = SessionRecorder(
-                    writer=session_writer,
-                    session_id=session_id,
-                    session_start=session_start,
-                )
-            # Rotating QR is an attendance fallback for lectures only. Exam
-            # and workshop sessions never open or close QR presence windows.
-            qr = _QRVerifier(session_writer, session_id) if mode == "lecture" else None
-            _init_observers(session_id, session_writer)
+        attached_session_id = session_id
+        # Exam and workshop need recognition/tracks for their own signals,
+        # but they are not attendance modules and must not write presence.
+        if mode == "lecture":
+            recorder = SessionRecorder(
+                writer=session_writer,
+                session_id=session_id,
+                session_start=session_start,
+            )
+        # Rotating QR is an attendance fallback for lectures only. Exam
+        # and workshop sessions never open or close QR presence windows.
+        qr = _QRVerifier(session_writer, session_id) if mode == "lecture" else None
+        _init_observers(session_id, session_writer)
 
-    _attach(ws.query_params.get("session_id"))
+    _attach(requested_session_id)
 
     last_ts = 0.0
     ended_explicitly = False
@@ -466,6 +512,18 @@ async def capture(ws: WebSocket) -> None:
             if aggregator is not None:
                 view = await run_in_threadpool(_observe_frame, frame, ts)
                 result.update(view)
+            if mode == "workshop":
+                # Workshop transport is anonymous, not merely workshop UI.
+                # The shared face pipeline supplies boxes/tracks needed for
+                # aggregate signals, but identity and attendance-shaped fields
+                # must not cross the socket boundary for this mode.
+                anonymous_faces = [
+                    {**face, "student_id": None, "score": 0.0} for face in result.get("faces", [])
+                ]
+                result["faces"] = anonymous_faces
+                result["present"] = [f"participant-{face['track_id']}" for face in anonymous_faces]
+                result["attended"] = []
+                result["transitions"] = []
             if qr is not None:
                 recognized = {f["student_id"] for f in result["faces"] if f.get("student_id")}
                 if recognized:

@@ -11,6 +11,7 @@
  */
 
 import { supabase } from "@/lib/supabase";
+import { API_BASE, authHeader } from "@/lib/api";
 import type { AuditEntry, ConsentRecord, DeletionRequestRow, DeviceRow } from "@/lib/data/types";
 
 interface AggregateMetricRow {
@@ -50,17 +51,12 @@ function summariseAggregates(rows: AggregateMetricRow[]): AggregateSummary {
   }
 
   const visibleWeight = reportRows.reduce((sum, row) => sum + Math.max(row.n_tracked, 0), 0);
-  const rosterWeight = reportRows.reduce(
-    (sum, row) => sum + Math.max(row.enrolled_in_zone, 0),
-    0,
-  );
+  const rosterWeight = reportRows.reduce((sum, row) => sum + Math.max(row.enrolled_in_zone, 0), 0);
   return {
     vnei:
       visibleWeight > 0
-        ? reportRows.reduce(
-            (sum, row) => sum + row.vnei * Math.max(row.n_tracked, 0),
-            0,
-          ) / visibleWeight
+        ? reportRows.reduce((sum, row) => sum + row.vnei * Math.max(row.n_tracked, 0), 0) /
+          visibleWeight
         : null,
     coverage:
       rosterWeight > 0
@@ -82,7 +78,9 @@ function summariesBySession(rows: AggregateMetricRow[]): Map<string, AggregateSu
     list.push(row);
     grouped.set(row.session_id, list);
   }
-  return new Map([...grouped].map(([sessionId, sessionRows]) => [sessionId, summariseAggregates(sessionRows)]));
+  return new Map(
+    [...grouped].map(([sessionId, sessionRows]) => [sessionId, summariseAggregates(sessionRows)]),
+  );
 }
 
 function localDateKey(iso: string): string {
@@ -213,6 +211,34 @@ export async function fetchManagementSessions(
   limit = 8,
   mode?: ManagementSessionRow["mode"],
 ): Promise<ManagementSessionRow[]> {
+  try {
+    const headers = await authHeader();
+    const url = mode
+      ? `${API_BASE}/v1/sessions?limit=${limit}&mode=${mode}`
+      : `${API_BASE}/v1/sessions?limit=${limit}`;
+    const res = await fetch(url, { headers });
+    if (res.ok) {
+      const rows = (await res.json()) as SessionHistoryRow[];
+      return rows
+        .filter((r) => r.ends_at !== null && (!mode || r.mode === mode))
+        .map((r) => ({
+          id: r.id,
+          class_name: r.subject ?? r.class_section,
+          class_section: r.class_section,
+          mode: r.mode,
+          started_at: r.starts_at,
+          ended_at: r.ends_at,
+          present_count: r.present_count,
+          total_count: r.total_count,
+          vnei: r.vnei,
+          coverage: r.coverage,
+          reportable_windows: r.reportable_windows,
+        }));
+    }
+  } catch {
+    /* fallback to direct Supabase */
+  }
+
   let query = supabase
     .from("class_sessions")
     .select("id, class_section, subject, mode, starts_at, ends_at")
@@ -307,9 +333,62 @@ export async function fetchTrendSeries(
   mode?: "lecture" | "exam" | "workshop",
 ): Promise<TrendPoint[]> {
   const since = new Date(Date.now() - days * 86_400_000).toISOString();
+
+  if (mode === "workshop") {
+    const headers = await authHeader();
+    const response = await fetch(`${API_BASE}/v1/sessions?limit=500&mode=workshop`, { headers });
+    if (response.ok) {
+      const sessions = ((await response.json()) as SessionHistoryRow[]).filter(
+        (session) => session.ends_at !== null && session.starts_at >= since,
+      );
+      const byDay = new Map<
+        string,
+        {
+          vneiWeighted: number;
+          vneiWeight: number;
+          coverageWeighted: number;
+          coverageWeight: number;
+        }
+      >();
+      for (const session of sessions) {
+        const day = localDateKey(session.starts_at);
+        const entry = byDay.get(day) ?? {
+          vneiWeighted: 0,
+          vneiWeight: 0,
+          coverageWeighted: 0,
+          coverageWeight: 0,
+        };
+        const vneiWeight = session.vnei_weight ?? session.reportable_windows;
+        const coverageWeight = session.coverage_weight ?? session.reportable_windows;
+        if (session.vnei !== null && vneiWeight > 0) {
+          entry.vneiWeighted += session.vnei * vneiWeight;
+          entry.vneiWeight += vneiWeight;
+        }
+        if (session.coverage !== null && coverageWeight > 0) {
+          entry.coverageWeighted += session.coverage * coverageWeight;
+          entry.coverageWeight += coverageWeight;
+        }
+        byDay.set(day, entry);
+      }
+      return [...byDay.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([day, value]) => {
+          const [, month, date] = day.split("-");
+          return {
+            date: day,
+            label: `${Number(date)}/${Number(month)}`,
+            attendance: null,
+            vnei: value.vneiWeight > 0 ? value.vneiWeighted / value.vneiWeight : null,
+            coverage:
+              value.coverageWeight > 0 ? value.coverageWeighted / value.coverageWeight : null,
+          };
+        });
+    }
+  }
+
   let query = supabase
     .from("class_sessions")
-    .select("id, class_section, starts_at, ends_at")
+    .select("id, class_section, mode, starts_at, ends_at")
     .not("ends_at", "is", null)
     .gte("starts_at", since);
   if (mode) query = query.eq("mode", mode);
@@ -317,77 +396,101 @@ export async function fetchTrendSeries(
   if (error) throw error;
   if (!sessions?.length) return [];
 
-  const ids = sessions.map((s) => s.id);
-  const sections = [...new Set(sessions.map((s) => s.class_section))];
-
-  const [
-    { data: presence, error: presErr },
-    { data: zones, error: zoneErr },
-    { data: roster, error: rosterErr },
-  ] = await Promise.all([
-    supabase
-      .from("presence_intervals")
-      .select("session_id, student_id")
-      .in("session_id", ids)
-      .eq("state", "PRESENT"),
-    supabase
-      .from("engagement_zone_aggregates")
-      .select("session_id, vnei, coverage")
-      .in("session_id", ids),
-    supabase.from("students").select("id, class_section").in("class_section", sections),
-  ]);
-  if (presErr) throw presErr;
-  if (zoneErr) throw zoneErr;
-  if (rosterErr) throw rosterErr;
+  const lectureSessions = sessions.filter((session) => session.mode === "lecture");
+  const workshopSessions = sessions.filter((session) => session.mode === "workshop");
 
   const presentBySession = new Map<string, Set<string>>();
-  for (const p of presence ?? []) {
-    const set = presentBySession.get(p.session_id) ?? new Set<string>();
-    set.add(p.student_id);
-    presentBySession.set(p.session_id, set);
-  }
-  const vneiBySession = new Map<string, number[]>();
-  const coverageBySession = new Map<string, number[]>();
-  for (const z of zones ?? []) {
-    const list = vneiBySession.get(z.session_id) ?? [];
-    list.push(z.vnei);
-    vneiBySession.set(z.session_id, list);
-    const coverage = coverageBySession.get(z.session_id) ?? [];
-    coverage.push(z.coverage);
-    coverageBySession.set(z.session_id, coverage);
-  }
   const rosterSizeBySection = new Map<string, number>();
-  for (const s of roster ?? []) {
-    rosterSizeBySection.set(s.class_section, (rosterSizeBySection.get(s.class_section) ?? 0) + 1);
+  if (lectureSessions.length > 0) {
+    const lectureIds = lectureSessions.map((session) => session.id);
+    const lectureSections = [...new Set(lectureSessions.map((session) => session.class_section))];
+    const [{ data: presence, error: presenceError }, { data: roster, error: rosterError }] =
+      await Promise.all([
+        supabase
+          .from("presence_intervals")
+          .select("session_id, student_id")
+          .in("session_id", lectureIds)
+          .eq("state", "PRESENT"),
+        supabase.from("students").select("id, class_section").in("class_section", lectureSections),
+      ]);
+    if (presenceError) throw presenceError;
+    if (rosterError) throw rosterError;
+    for (const row of presence ?? []) {
+      const set = presentBySession.get(row.session_id) ?? new Set<string>();
+      set.add(row.student_id);
+      presentBySession.set(row.session_id, set);
+    }
+    for (const student of roster ?? []) {
+      rosterSizeBySection.set(
+        student.class_section,
+        (rosterSizeBySection.get(student.class_section) ?? 0) + 1,
+      );
+    }
   }
 
-  // One row per session first, then fold same-day sessions together.
+  let aggregateSummaries = new Map<string, AggregateSummary>();
+  if (workshopSessions.length > 0) {
+    const { data: zones, error: zoneError } = await supabase
+      .from("engagement_zone_aggregates")
+      .select("session_id, window_start, zone, n_tracked, enrolled_in_zone, vnei, coverage")
+      .in(
+        "session_id",
+        workshopSessions.map((session) => session.id),
+      )
+      .returns<AggregateMetricRow[]>();
+    if (zoneError) throw zoneError;
+    aggregateSummaries = summariesBySession(zones ?? []);
+  }
+
   const byDay = new Map<
     string,
-    { present: number; total: number; vnei: number[]; coverage: number[] }
+    {
+      present: number;
+      total: number;
+      vneiWeighted: number;
+      vneiWeight: number;
+      coverageWeighted: number;
+      coverageWeight: number;
+    }
   >();
-  for (const s of sessions) {
-    const day = s.starts_at.slice(0, 10);
-    const entry = byDay.get(day) ?? { present: 0, total: 0, vnei: [], coverage: [] };
-    entry.present += presentBySession.get(s.id)?.size ?? 0;
-    entry.total += rosterSizeBySection.get(s.class_section) ?? 0;
-    entry.vnei.push(...(vneiBySession.get(s.id) ?? []));
-    entry.coverage.push(...(coverageBySession.get(s.id) ?? []));
+  for (const session of sessions) {
+    const day = localDateKey(session.starts_at);
+    const entry = byDay.get(day) ?? {
+      present: 0,
+      total: 0,
+      vneiWeighted: 0,
+      vneiWeight: 0,
+      coverageWeighted: 0,
+      coverageWeight: 0,
+    };
+
+    if (session.mode === "lecture") {
+      entry.present += presentBySession.get(session.id)?.size ?? 0;
+      entry.total += rosterSizeBySection.get(session.class_section) ?? 0;
+    }
+
+    const aggregate = aggregateSummaries.get(session.id);
+    if (aggregate?.vnei !== null && aggregate?.vnei !== undefined) {
+      entry.vneiWeighted += aggregate.vnei * aggregate.vneiWeight;
+      entry.vneiWeight += aggregate.vneiWeight;
+    }
+    if (aggregate?.coverage !== null && aggregate?.coverage !== undefined) {
+      entry.coverageWeighted += aggregate.coverage * aggregate.coverageWeight;
+      entry.coverageWeight += aggregate.coverageWeight;
+    }
     byDay.set(day, entry);
   }
 
   return [...byDay.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([day, v]) => {
-      const d = new Date(day);
+    .map(([day, value]) => {
+      const [, month, date] = day.split("-");
       return {
         date: day,
-        label: `${d.getDate()}/${d.getMonth() + 1}`,
-        attendance: v.total > 0 ? v.present / v.total : null,
-        vnei: v.vnei.length ? v.vnei.reduce((a, b) => a + b, 0) / v.vnei.length : null,
-        coverage: v.coverage.length
-          ? v.coverage.reduce((a, b) => a + b, 0) / v.coverage.length
-          : null,
+        label: `${Number(date)}/${Number(month)}`,
+        attendance: value.total > 0 ? value.present / value.total : null,
+        vnei: value.vneiWeight > 0 ? value.vneiWeighted / value.vneiWeight : null,
+        coverage: value.coverageWeight > 0 ? value.coverageWeighted / value.coverageWeight : null,
       };
     });
 }
@@ -408,9 +511,21 @@ export interface SessionHistoryRow {
   vnei: number | null;
   coverage: number | null;
   reportable_windows: number;
+  vnei_weight?: number;
+  coverage_weight?: number;
 }
 
 export async function fetchSessionsLive(limit = 50): Promise<SessionHistoryRow[]> {
+  try {
+    const headers = await authHeader();
+    const res = await fetch(`${API_BASE}/v1/sessions?limit=${limit}`, { headers });
+    if (res.ok) {
+      return (await res.json()) as SessionHistoryRow[];
+    }
+  } catch {
+    /* fallback to direct Supabase query */
+  }
+
   const { data: sessions, error } = await supabase
     .from("class_sessions")
     .select("id, class_section, subject, mode, starts_at, ends_at")
@@ -419,73 +534,77 @@ export async function fetchSessionsLive(limit = 50): Promise<SessionHistoryRow[]
   if (error) throw error;
   if (!sessions?.length) return [];
 
-  const ids = sessions.map((s) => s.id);
-  const sections = [...new Set(sessions.map((s) => s.class_section))];
-
-  const [
-    { data: presence, error: presErr },
-    { data: roster, error: rosterErr },
-    { data: flags, error: flagErr },
-    { data: zones, error: zoneErr },
-  ] = await Promise.all([
-    supabase
-      .from("presence_intervals")
-      .select("session_id, student_id")
-      .in("session_id", ids)
-      .eq("state", "PRESENT"),
-    supabase.from("students").select("id, class_section").in("class_section", sections),
-    supabase.from("proctor_flags").select("session_id, review_status").in("session_id", ids),
-    supabase
-      .from("engagement_zone_aggregates")
-      .select("session_id, window_start, vnei, coverage")
-      .in("session_id", ids),
-  ]);
-  if (presErr) throw presErr;
-  if (rosterErr) throw rosterErr;
-  if (flagErr) throw flagErr;
-  if (zoneErr) throw zoneErr;
+  const lectureSessions = sessions.filter((session) => session.mode === "lecture");
+  const examSessions = sessions.filter((session) => session.mode === "exam");
+  const workshopSessions = sessions.filter((session) => session.mode === "workshop");
 
   const presentBySession = new Map<string, Set<string>>();
-  for (const p of presence ?? []) {
-    const set = presentBySession.get(p.session_id) ?? new Set<string>();
-    set.add(p.student_id);
-    presentBySession.set(p.session_id, set);
-  }
   const rosterSizeBySection = new Map<string, number>();
-  for (const s of roster ?? []) {
-    rosterSizeBySection.set(s.class_section, (rosterSizeBySection.get(s.class_section) ?? 0) + 1);
-  }
-
-  const flagCountBySession = new Map<string, number>();
-  const pendingFlagCountBySession = new Map<string, number>();
-  for (const flag of flags ?? []) {
-    flagCountBySession.set(flag.session_id, (flagCountBySession.get(flag.session_id) ?? 0) + 1);
-    if (flag.review_status === "pending") {
-      pendingFlagCountBySession.set(
-        flag.session_id,
-        (pendingFlagCountBySession.get(flag.session_id) ?? 0) + 1,
+  if (lectureSessions.length > 0) {
+    const lectureIds = lectureSessions.map((session) => session.id);
+    const lectureSections = [...new Set(lectureSessions.map((session) => session.class_section))];
+    const [{ data: presence, error: presenceError }, { data: roster, error: rosterError }] =
+      await Promise.all([
+        supabase
+          .from("presence_intervals")
+          .select("session_id, student_id")
+          .in("session_id", lectureIds)
+          .eq("state", "PRESENT"),
+        supabase.from("students").select("id, class_section").in("class_section", lectureSections),
+      ]);
+    if (presenceError) throw presenceError;
+    if (rosterError) throw rosterError;
+    for (const row of presence ?? []) {
+      const set = presentBySession.get(row.session_id) ?? new Set<string>();
+      set.add(row.student_id);
+      presentBySession.set(row.session_id, set);
+    }
+    for (const student of roster ?? []) {
+      rosterSizeBySection.set(
+        student.class_section,
+        (rosterSizeBySection.get(student.class_section) ?? 0) + 1,
       );
     }
   }
 
-  const vneiBySession = new Map<string, number[]>();
-  const coverageBySession = new Map<string, number[]>();
-  const windowsBySession = new Map<string, Set<string>>();
-  for (const zone of zones ?? []) {
-    const values = vneiBySession.get(zone.session_id) ?? [];
-    values.push(zone.vnei);
-    vneiBySession.set(zone.session_id, values);
-    const coverage = coverageBySession.get(zone.session_id) ?? [];
-    coverage.push(zone.coverage);
-    coverageBySession.set(zone.session_id, coverage);
-    const windows = windowsBySession.get(zone.session_id) ?? new Set<string>();
-    windows.add(zone.window_start);
-    windowsBySession.set(zone.session_id, windows);
+  const flagCountBySession = new Map<string, number>();
+  const pendingFlagCountBySession = new Map<string, number>();
+  if (examSessions.length > 0) {
+    const { data: flags, error: flagError } = await supabase
+      .from("proctor_flags")
+      .select("session_id, review_status")
+      .in(
+        "session_id",
+        examSessions.map((session) => session.id),
+      );
+    if (flagError) throw flagError;
+    for (const flag of flags ?? []) {
+      flagCountBySession.set(flag.session_id, (flagCountBySession.get(flag.session_id) ?? 0) + 1);
+      if (flag.review_status === "pending") {
+        pendingFlagCountBySession.set(
+          flag.session_id,
+          (pendingFlagCountBySession.get(flag.session_id) ?? 0) + 1,
+        );
+      }
+    }
+  }
+
+  let aggregateSummaries = new Map<string, AggregateSummary>();
+  if (workshopSessions.length > 0) {
+    const { data: zones, error: zoneError } = await supabase
+      .from("engagement_zone_aggregates")
+      .select("session_id, window_start, zone, n_tracked, enrolled_in_zone, vnei, coverage")
+      .in(
+        "session_id",
+        workshopSessions.map((session) => session.id),
+      )
+      .returns<AggregateMetricRow[]>();
+    if (zoneError) throw zoneError;
+    aggregateSummaries = summariesBySession(zones ?? []);
   }
 
   return sessions.map((s) => {
-    const vnei = vneiBySession.get(s.id);
-    const coverage = coverageBySession.get(s.id);
+    const aggregate = aggregateSummaries.get(s.id);
     return {
       id: s.id,
       class_section: s.class_section,
@@ -493,13 +612,13 @@ export async function fetchSessionsLive(limit = 50): Promise<SessionHistoryRow[]
       mode: s.mode as SessionHistoryRow["mode"],
       starts_at: s.starts_at,
       ends_at: s.ends_at,
-      present_count: presentBySession.get(s.id)?.size ?? 0,
-      total_count: rosterSizeBySection.get(s.class_section) ?? 0,
-      flag_count: flagCountBySession.get(s.id) ?? 0,
-      pending_flag_count: pendingFlagCountBySession.get(s.id) ?? 0,
-      vnei: vnei?.length ? vnei.reduce((a, b) => a + b, 0) / vnei.length : null,
-      coverage: coverage?.length ? coverage.reduce((a, b) => a + b, 0) / coverage.length : null,
-      reportable_windows: windowsBySession.get(s.id)?.size ?? 0,
+      present_count: s.mode === "lecture" ? (presentBySession.get(s.id)?.size ?? 0) : 0,
+      total_count: s.mode === "lecture" ? (rosterSizeBySection.get(s.class_section) ?? 0) : 0,
+      flag_count: s.mode === "exam" ? (flagCountBySession.get(s.id) ?? 0) : 0,
+      pending_flag_count: s.mode === "exam" ? (pendingFlagCountBySession.get(s.id) ?? 0) : 0,
+      vnei: s.mode === "workshop" ? (aggregate?.vnei ?? null) : null,
+      coverage: s.mode === "workshop" ? (aggregate?.coverage ?? null) : null,
+      reportable_windows: s.mode === "workshop" ? (aggregate?.reportableWindows ?? 0) : 0,
     };
   });
 }

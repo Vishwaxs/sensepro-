@@ -70,3 +70,6 @@ SensePro+*
 
 # Pretrained detector weights fetched at build/run time, never committed.
 *.pt
+
+.vercel
+.env*

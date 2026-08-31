@@ -1,8 +1,8 @@
-"""Presence write-path to Supabase (service role, RLS-bypassing).
+"""SensePro persistence adapter for Supabase (service role, RLS-bypassing).
 
-The frontend reads Postgres directly via RLS + Realtime; the backend ONLY
-writes inference results. This module is that write side and nothing else — it
-never reads roster/attendance back, and it never persists a raw frame.
+Inference results are written here, while authenticated API endpoints also use
+bounded reads for rosters, session summaries, and review queues. Live frames
+never enter this adapter and are never persisted.
 
 Design:
 - `PresenceWriter` is a protocol. `NoopWriter` (default when Supabase is not
@@ -32,6 +32,62 @@ _IN_MEMORY_ROLE_REQUESTS: dict[str, dict] = {}
 
 def _iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat()
+
+
+def _summarise_zone_aggregates(rows: list[dict]) -> dict[str, dict]:
+    """Build one honest workshop summary per session.
+
+    Prefer the class row when a window has one; otherwise combine its zones.
+    VNEI is weighted by visible participants and coverage by enrolled zone size,
+    matching the live management and trends views.
+    """
+    windows: dict[tuple[str, str], list[dict]] = {}
+    for row in rows:
+        session_id = row.get("session_id")
+        window_start = row.get("window_start")
+        if not session_id or not window_start:
+            continue
+        windows.setdefault((session_id, window_start), []).append(row)
+
+    totals: dict[str, dict[str, float | int]] = {}
+    for (session_id, _), window_rows in windows.items():
+        class_rows = [row for row in window_rows if row.get("zone") == "class"]
+        report_rows = class_rows or window_rows
+        total = totals.setdefault(
+            session_id,
+            {
+                "vnei_sum": 0.0,
+                "vnei_weight": 0,
+                "coverage_sum": 0.0,
+                "coverage_weight": 0,
+                "reportable_windows": 0,
+            },
+        )
+        total["reportable_windows"] += 1
+        for row in report_rows:
+            visible = max(int(row.get("n_tracked") or 0), 0)
+            enrolled = max(int(row.get("enrolled_in_zone") or 0), 0)
+            if row.get("vnei") is not None and visible > 0:
+                total["vnei_sum"] += float(row["vnei"]) * visible
+                total["vnei_weight"] += visible
+            if row.get("coverage") is not None and enrolled > 0:
+                total["coverage_sum"] += float(row["coverage"]) * enrolled
+                total["coverage_weight"] += enrolled
+
+    summaries: dict[str, dict] = {}
+    for session_id, total in totals.items():
+        vnei_weight = int(total["vnei_weight"])
+        coverage_weight = int(total["coverage_weight"])
+        summaries[session_id] = {
+            "vnei": float(total["vnei_sum"]) / vnei_weight if vnei_weight else None,
+            "coverage": (
+                float(total["coverage_sum"]) / coverage_weight if coverage_weight else None
+            ),
+            "reportable_windows": int(total["reportable_windows"]),
+            "vnei_weight": vnei_weight,
+            "coverage_weight": coverage_weight,
+        }
+    return summaries
 
 
 @dataclass
@@ -122,8 +178,8 @@ class PresenceWriter(Protocol):
     def end_session(self, session_id: str, ends_at: datetime) -> None: ...
     def open_interval(self, row: PresenceInterval) -> None: ...
     def close_interval(self, row: PresenceInterval) -> None: ...
-    def create_flag(self, row: ProctorFlagRow) -> None: ...
-    def create_zone_aggregate(self, row: ZoneAggregateRow) -> None: ...
+    def create_flag(self, row: ProctorFlagRow) -> bool | None: ...
+    def create_zone_aggregate(self, row: ZoneAggregateRow) -> bool | None: ...
 
 
 class NoopWriter:
@@ -144,11 +200,13 @@ class NoopWriter:
     def close_interval(self, row: PresenceInterval) -> None:
         logger.debug("noop close %s %s", row.student_id, row.state)
 
-    def create_flag(self, row: ProctorFlagRow) -> None:
+    def create_flag(self, row: ProctorFlagRow) -> bool:
         logger.debug("noop flag %s %s", row.flag_type, row.student_id)
+        return False
 
-    def create_zone_aggregate(self, row: ZoneAggregateRow) -> None:
+    def create_zone_aggregate(self, row: ZoneAggregateRow) -> bool:
         logger.debug("noop zone aggregate %s vnei=%s", row.zone, row.vnei)
+        return False
 
 
 class SupabaseWriter:
@@ -163,13 +221,18 @@ class SupabaseWriter:
     def __init__(self, url: str, key: str) -> None:
         import httpx  # lazy: the offline path never needs it
 
+        headers = {
+            "apikey": key,
+            "Content-Type": "application/json",
+        }
+        # New sb_secret_/sb_publishable_ keys are opaque, not JWTs. Supabase
+        # rejects them in Authorization; legacy service_role/anon JWTs still
+        # require the Bearer header for their role claims.
+        if not key.startswith(("sb_secret_", "sb_publishable_")):
+            headers["Authorization"] = f"Bearer {key}"
         self._client = httpx.Client(
             base_url=url.rstrip("/") + "/rest/v1",
-            headers={
-                "apikey": key,
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
             timeout=10.0,
         )
 
@@ -237,23 +300,27 @@ class SupabaseWriter:
         except Exception as exc:  # noqa: BLE001
             logger.warning("presence close dropped: %s %s (%s)", row.student_id, row.state, exc)
 
-    def create_flag(self, row: ProctorFlagRow) -> None:
+    def create_flag(self, row: ProctorFlagRow) -> bool:
         """Proctor flags are assistive review items — like presence, a lost
         write is logged and dropped rather than stalling the capture loop."""
         try:
             r = self._client.post("/proctor_flags", json=row.payload())
             r.raise_for_status()
+            return True
         except Exception as exc:  # noqa: BLE001
             logger.warning("proctor flag dropped: %s %s (%s)", row.flag_type, row.student_id, exc)
+            return False
 
-    def create_zone_aggregate(self, row: ZoneAggregateRow) -> None:
+    def create_zone_aggregate(self, row: ZoneAggregateRow) -> bool:
         """Zone aggregates are periodic and reproducible from a re-run — like
         the other inference writes, log-and-drop on failure."""
         try:
             r = self._client.post("/engagement_zone_aggregates", json=row.payload())
             r.raise_for_status()
+            return True
         except Exception as exc:  # noqa: BLE001
             logger.warning("zone aggregate dropped: %s (%s)", row.zone, exc)
+            return False
 
     # ---------- QR absentee fallback (service-role) ----------
     def issue_qr_token(self, session_id: str, ttl_s: int) -> dict:
@@ -522,6 +589,232 @@ class SupabaseWriter:
         rows = r.json()
         return rows[0] if rows else None
 
+    def get_active_session(self, mode: str | None = None) -> dict | None:
+        params = {
+            "select": "id,class_section,subject,mode,starts_at",
+            "ends_at": "is.null",
+            "order": "starts_at.desc",
+            "limit": "1",
+        }
+        if mode:
+            params["mode"] = f"eq.{mode}"
+        r = self._client.get("/class_sessions", params=params)
+        r.raise_for_status()
+        rows = r.json()
+        return rows[0] if rows else None
+
+    def get_session(self, session_id: str) -> dict | None:
+        """Return one persisted session for capture attachment validation."""
+        r = self._client.get(
+            "/class_sessions",
+            params={
+                "id": f"eq.{session_id}",
+                "select": "id,mode,starts_at,ends_at",
+                "limit": "1",
+            },
+        )
+        r.raise_for_status()
+        rows = r.json()
+        return rows[0] if rows else None
+
+    def list_presence_intervals(self, session_id: str) -> list[dict]:
+        params = {
+            "session_id": f"eq.{session_id}",
+            "select": "id,session_id,student_id,state,started_at,ended_at,via",
+            "order": "started_at.asc",
+        }
+        r = self._client.get("/presence_intervals", params=params)
+        r.raise_for_status()
+        return r.json()
+
+    def list_sessions_history(
+        self, limit: int = 50, class_section: str | None = None, mode: str | None = None
+    ) -> list[dict]:
+        params = {
+            "select": "id,class_section,subject,mode,starts_at,ends_at",
+            "order": "starts_at.desc",
+            "limit": str(limit),
+        }
+        if class_section:
+            params["class_section"] = f"eq.{class_section}"
+        if mode:
+            params["mode"] = f"eq.{mode}"
+        r = self._client.get("/class_sessions", params=params)
+        r.raise_for_status()
+        sessions = r.json()
+        if not sessions:
+            return []
+
+        lecture_sessions = [s for s in sessions if s.get("mode", "lecture") == "lecture"]
+        exam_sessions = [s for s in sessions if s.get("mode") == "exam"]
+        workshop_sessions = [s for s in sessions if s.get("mode") == "workshop"]
+
+        presence: list[dict] = []
+        roster: list[dict] = []
+        if lecture_sessions:
+            lecture_ids = [s["id"] for s in lecture_sessions]
+            lecture_sections = list({s["class_section"] for s in lecture_sessions})
+            try:
+                p_res = self._client.get(
+                    "/presence_intervals",
+                    params={
+                        "session_id": f"in.({','.join(lecture_ids)})",
+                        "state": "eq.PRESENT",
+                        "select": "session_id,student_id",
+                    },
+                )
+                presence = p_res.json() if p_res.status_code == 200 else []
+            except Exception:
+                presence = []
+
+            try:
+                r_res = self._client.get(
+                    "/students",
+                    params={
+                        "class_section": f"in.({','.join(lecture_sections)})",
+                        "select": "id,class_section",
+                    },
+                )
+                roster = r_res.json() if r_res.status_code == 200 else []
+            except Exception:
+                roster = []
+
+        flags: list[dict] = []
+        if exam_sessions:
+            exam_ids = [s["id"] for s in exam_sessions]
+            try:
+                f_res = self._client.get(
+                    "/proctor_flags",
+                    params={
+                        "session_id": f"in.({','.join(exam_ids)})",
+                        "select": "session_id,review_status",
+                    },
+                )
+                flags = f_res.json() if f_res.status_code == 200 else []
+            except Exception:
+                flags = []
+
+        zones: list[dict] = []
+        if workshop_sessions:
+            workshop_ids = [s["id"] for s in workshop_sessions]
+            try:
+                z_res = self._client.get(
+                    "/engagement_zone_aggregates",
+                    params={
+                        "session_id": f"in.({','.join(workshop_ids)})",
+                        "select": (
+                            "session_id,window_start,zone,n_tracked,enrolled_in_zone,vnei,coverage"
+                        ),
+                    },
+                )
+                zones = z_res.json() if z_res.status_code == 200 else []
+            except Exception:
+                zones = []
+
+        present_by_session: dict[str, set] = {}
+        for p in presence:
+            sid = p.get("session_id")
+            present_by_session.setdefault(sid, set()).add(p.get("student_id"))
+
+        roster_by_section: dict[str, int] = {}
+        for s in roster:
+            sec = s.get("class_section")
+            roster_by_section[sec] = roster_by_section.get(sec, 0) + 1
+
+        flags_by_session: dict[str, int] = {}
+        pending_flags_by_session: dict[str, int] = {}
+        for f in flags:
+            sid = f.get("session_id")
+            flags_by_session[sid] = flags_by_session.get(sid, 0) + 1
+            if f.get("review_status") == "pending":
+                pending_flags_by_session[sid] = pending_flags_by_session.get(sid, 0) + 1
+
+        aggregate_by_session = _summarise_zone_aggregates(zones)
+
+        out = []
+        for s in sessions:
+            sid = s["id"]
+            sec = s["class_section"]
+            session_mode = s.get("mode", "lecture")
+            aggregate = aggregate_by_session.get(sid, {})
+            out.append(
+                {
+                    "id": sid,
+                    "class_section": sec,
+                    "subject": s.get("subject"),
+                    "mode": session_mode,
+                    "starts_at": s.get("starts_at"),
+                    "ends_at": s.get("ends_at"),
+                    "present_count": (
+                        len(present_by_session.get(sid, set())) if session_mode == "lecture" else 0
+                    ),
+                    "total_count": roster_by_section.get(sec, 0)
+                    if session_mode == "lecture"
+                    else 0,
+                    "flag_count": flags_by_session.get(sid, 0) if session_mode == "exam" else 0,
+                    "pending_flag_count": (
+                        pending_flags_by_session.get(sid, 0) if session_mode == "exam" else 0
+                    ),
+                    "vnei": aggregate.get("vnei") if session_mode == "workshop" else None,
+                    "coverage": (aggregate.get("coverage") if session_mode == "workshop" else None),
+                    "reportable_windows": (
+                        aggregate.get("reportable_windows", 0) if session_mode == "workshop" else 0
+                    ),
+                    "vnei_weight": (
+                        aggregate.get("vnei_weight", 0) if session_mode == "workshop" else 0
+                    ),
+                    "coverage_weight": (
+                        aggregate.get("coverage_weight", 0) if session_mode == "workshop" else 0
+                    ),
+                }
+            )
+        return out
+
+    def list_proctor_flags(self, session_id: str) -> list[dict]:
+        """Return retained, unsuppressed review items for one examination."""
+        r = self._client.get(
+            "/proctor_flags",
+            params={
+                "session_id": f"eq.{session_id}",
+                "suppressed": "eq.false",
+                "select": (
+                    "id,session_id,student_id,flag_type,suppressed,flagged_at,"
+                    "review_status,reviewed_by,reviewed_at"
+                ),
+                "order": "flagged_at.desc",
+            },
+        )
+        r.raise_for_status()
+        return r.json()
+
+    def review_proctor_flag(
+        self,
+        session_id: str,
+        flag_id: str,
+        review_status: str,
+        reviewed_by: str,
+        reviewed_at: datetime,
+    ) -> dict | None:
+        """Record one human decision without changing captured event evidence."""
+        r = self._client.patch(
+            "/proctor_flags",
+            params={
+                "id": f"eq.{flag_id}",
+                "session_id": f"eq.{session_id}",
+                "review_status": "eq.pending",
+                "suppressed": "eq.false",
+            },
+            headers={"Prefer": "return=representation"},
+            json={
+                "review_status": review_status,
+                "reviewed_by": reviewed_by,
+                "reviewed_at": _iso(reviewed_at),
+            },
+        )
+        r.raise_for_status()
+        rows = r.json()
+        return rows[0] if rows else None
+
     def has_open_present(self, session_id: str, student_id: str) -> bool:
         r = self._client.get(
             "/presence_intervals",
@@ -626,15 +919,22 @@ class SupabaseWriter:
         satisfy_window/claim_qr_token's single-winner PATCH pattern, so two
         admins resolving the same request concurrently can't both succeed.
         Returns None if the request was already resolved."""
+        from uuid import UUID
+
+        payload: dict[str, object] = {
+            "status": status,
+            "resolved_at": _iso(datetime.now(timezone.utc)),
+        }
+        try:
+            UUID(admin_uid)
+            payload["resolved_by"] = admin_uid
+        except (ValueError, TypeError):
+            pass
         r = self._client.patch(
             "/deletion_requests",
             params={"id": f"eq.{request_id}", "status": "eq.pending"},
             headers={"Prefer": "return=representation"},
-            json={
-                "status": status,
-                "resolved_at": _iso(datetime.now(timezone.utc)),
-                "resolved_by": admin_uid,
-            },
+            json=payload,
         )
         r.raise_for_status()
         rows = r.json()
@@ -651,15 +951,22 @@ class SupabaseWriter:
         return rows[0] if rows else None
 
     def set_setting(self, key: str, value: object, admin_uid: str) -> dict | None:
+        from uuid import UUID
+
+        payload: dict[str, object] = {
+            "value": value,
+            "updated_at": _iso(datetime.now(timezone.utc)),
+        }
+        try:
+            UUID(admin_uid)
+            payload["updated_by"] = admin_uid
+        except (ValueError, TypeError):
+            pass
         r = self._client.patch(
             "/app_settings",
             params={"key": f"eq.{key}"},
             headers={"Prefer": "return=representation"},
-            json={
-                "value": value,
-                "updated_at": _iso(datetime.now(timezone.utc)),
-                "updated_by": admin_uid,
-            },
+            json=payload,
         )
         r.raise_for_status()
         rows = r.json()
@@ -753,23 +1060,21 @@ class SupabaseWriter:
                     return r
             return None
 
-    def list_role_requests(
-        self, status: str | None = None, limit: int = 50
-    ) -> list[dict]:
+    def list_role_requests(self, status: str | None = None, limit: int = 50) -> list[dict]:
         try:
             params: dict[str, str] = {
                 "select": "id,user_id,email,full_name,requested_role,reason,status,created_at,resolved_at,resolved_by,resolved_role",
                 "order": "created_at.desc",
                 "limit": str(limit),
             }
-            if status:
+            if status and status != "all":
                 params["status"] = f"eq.{status}"
             r = self._client.get("/role_requests", params=params)
             r.raise_for_status()
             return r.json()
         except Exception:
             items = list(_IN_MEMORY_ROLE_REQUESTS.values())
-            if status:
+            if status and status != "all":
                 items = [r for r in items if r.get("status") == status]
             return sorted(items, key=lambda x: x.get("created_at", ""), reverse=True)[:limit]
 
@@ -829,9 +1134,7 @@ class SupabaseWriter:
                 return row
             return None
 
-    def assign_user_role(
-        self, user_id: str, email: str, role: str, admin_uid: str
-    ) -> dict | None:
+    def assign_user_role(self, user_id: str, email: str, role: str, admin_uid: str) -> dict | None:
         """Assign role in user_roles table (upsert on user_id)."""
         try:
             r = self._client.post(
@@ -886,13 +1189,13 @@ def build_writer() -> PresenceWriter:
         try:
             writer = SupabaseWriter(url=settings.supabase_url, key=settings.supabase_postgrest_key)
             # Quick connectivity check — hit a lightweight endpoint
-            writer._client.get("/", params={"limit": "0"})
+            response = writer._client.get("/", params={"limit": "0"})
+            response.raise_for_status()
             return writer
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Supabase auth failed (%s); falling back to no-op writer. "
-                "Check SUPABASE_SECRET_KEY — PostgREST needs the service_role JWT, "
-                "not the sb_secret_ management key.",
+                "Check SUPABASE_SECRET_KEY or the legacy service_role JWT.",
                 exc,
             )
             return NoopWriter()
