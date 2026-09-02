@@ -1,15 +1,15 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Camera, CheckCircle2, Clock, Loader2, XCircle } from "lucide-react";
+import { Camera, CheckCircle2, ChevronDown, Clock, Loader2, LogIn, RefreshCw, XCircle } from "lucide-react";
 import { guardRoute } from "@/lib/auth-guard";
-import { supabase, supabaseAuth } from "@/lib/supabase/client";
-import { API_BASE } from "@/lib/api";
+import { supabase } from "@/lib/supabase/client";
+import { API_BASE, getAuthToken } from "@/lib/api";
 
 export const Route = createFileRoute("/claim")({
   validateSearch: (s: Record<string, unknown>) => ({
     token: typeof s.token === "string" ? s.token : "",
   }),
-  beforeLoad: guardRoute(["student"]),
+  beforeLoad: guardRoute("authenticated"),
   head: () => ({
     meta: [{ title: "Verify attendance · SensePro+" }, { name: "robots", content: "noindex" }],
   }),
@@ -22,6 +22,7 @@ function ClaimPage() {
   const { token } = Route.useSearch();
   const [phase, setPhase] = useState<Phase>("claiming");
   const [message, setMessage] = useState("");
+  const [isAuthError, setIsAuthError] = useState(false);
   const [remaining, setRemaining] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [note, setNote] = useState<string | null>(null); // retryable "didn't match" hint
@@ -40,21 +41,36 @@ function ClaimPage() {
         setMessage("No code in the link — scan the QR again.");
         return;
       }
+      // getUserMedia requires a secure context (HTTPS or localhost).
+      if (!window.isSecureContext) {
+        setPhase("error");
+        setMessage(
+          "This page must be opened over HTTPS. Ask your instructor to share the secure link.",
+        );
+        return;
+      }
       try {
-        const {
-          data: { session },
-        } = await supabaseAuth.auth.getSession();
-        if (!session) throw new Error("Please sign in first, then rescan.");
+        const authToken = await getAuthToken();
+        if (!authToken) {
+          setIsAuthError(true);
+          throw new Error("Please sign in with your student account to verify attendance.");
+        }
         const resp = await fetch(`${API_BASE}/v1/qr/claim`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${session.access_token}`,
+            Authorization: `Bearer ${authToken}`,
           },
           body: JSON.stringify({ token }),
         });
         const body = await resp.json().catch(() => ({ detail: resp.statusText }));
-        if (!resp.ok) throw new Error(body.detail || `HTTP ${resp.status}`);
+        if (!resp.ok) {
+          if (resp.status === 401) {
+            setIsAuthError(true);
+            throw new Error("Your session has expired. Please sign in again.");
+          }
+          throw new Error(body.detail || `HTTP ${resp.status}`);
+        }
         if (cancelled) return;
         windowIdRef.current = body.window_id;
         deadlineRef.current = Date.now() + body.seconds * 1000;
@@ -64,7 +80,12 @@ function ClaimPage() {
       } catch (err) {
         if (cancelled) return;
         setPhase("error");
-        setMessage(err instanceof Error ? err.message : "Could not verify.");
+        // Distinguish network errors from server errors.
+        if (err instanceof TypeError) {
+          setMessage("You appear to be offline — check your connection and try again.");
+        } else {
+          setMessage(err instanceof Error ? err.message : "Could not verify.");
+        }
       }
     })();
     return () => {
@@ -136,9 +157,15 @@ function ClaimPage() {
             /* autoplay policy — the muted inline video plays on its own */
           });
         }
-      } catch {
-        if (!cancelled)
-          setCameraError("Camera blocked. Allow camera access in your browser, then retry.");
+      } catch (err) {
+        if (!cancelled) {
+          const name = err instanceof DOMException ? err.name : "";
+          if (name === "NotFoundError") {
+            setCameraError("No camera found on this device.");
+          } else {
+            setCameraError("Camera blocked. Allow camera access in your browser settings, then retry.");
+          }
+        }
       }
     })();
     return () => {
@@ -176,17 +203,18 @@ function ClaimPage() {
       const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, "image/jpeg", 0.7));
       if (!blob) throw new Error("Could not capture the photo — try again.");
 
-      const {
-        data: { session },
-      } = await supabaseAuth.auth.getSession();
-      if (!session) throw new Error("Session expired — sign in and rescan.");
+      const authToken = await getAuthToken();
+      if (!authToken) {
+        setIsAuthError(true);
+        throw new Error("Session expired — sign in and rescan.");
+      }
 
       const form = new FormData();
       form.append("window_id", wid);
       form.append("selfie", blob, "selfie.jpg");
       const resp = await fetch(`${API_BASE}/v1/qr/verify`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${session.access_token}` },
+        headers: { Authorization: `Bearer ${authToken}` },
         body: form,
       });
       const body = await resp.json().catch(() => ({ detail: resp.statusText }));
@@ -288,14 +316,66 @@ function ClaimPage() {
 
         {phase === "error" && (
           <Stage
-            icon={<XCircle className="h-8 w-8 text-[color:var(--bad)]" />}
-            tone="border-[color:var(--bad)]/40 bg-[color:var(--bad)]/8"
+            icon={
+              isAuthError || /sign in|session|unauthorized|log in/i.test(message) ? (
+                <LogIn className="h-8 w-8 text-[color:var(--accent)]" />
+              ) : (
+                <XCircle className="h-8 w-8 text-[color:var(--bad)]" />
+              )
+            }
+            tone={
+              isAuthError || /sign in|session|unauthorized|log in/i.test(message)
+                ? "border-[color:var(--accent)]/40 bg-[color:var(--accent)]/8"
+                : "border-[color:var(--bad)]/40 bg-[color:var(--bad)]/8"
+            }
           >
-            <Title>Couldn&apos;t verify</Title>
+            <Title>
+              {isAuthError || /sign in|session|unauthorized|log in/i.test(message)
+                ? "Sign in required"
+                : "Couldn't verify"}
+            </Title>
             <p className="mt-2 text-sm text-[color:var(--muted)]">{message}</p>
+            {isAuthError || /sign in|session|unauthorized|log in/i.test(message) ? (
+              <div className="mt-6 flex flex-col gap-2">
+                <a
+                  href={`/login?redirect=${encodeURIComponent(
+                    typeof window !== "undefined"
+                      ? window.location.pathname + window.location.search
+                      : `/claim?token=${token}`
+                  )}`}
+                  className="sp-btn sp-btn-primary inline-flex w-full items-center justify-center gap-2 py-2.5 text-sm font-medium"
+                >
+                  <LogIn className="h-4 w-4" /> Sign in to SensePro+
+                </a>
+              </div>
+            ) : (
+              <div className="mt-6 flex flex-col gap-2">
+                <button
+                  type="button"
+                  onClick={() => window.location.reload()}
+                  className="sp-btn sp-btn-secondary inline-flex w-full items-center justify-center gap-2 py-2 text-xs"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" /> Try again
+                </button>
+              </div>
+            )}
           </Stage>
         )}
       </div>
+
+      {/* Diagnostics panel — collapsible, visible in dev or with ?debug=1.
+          On a phone you can't attach a debugger, so this surfaces the state
+          step-by-step for the teacher or student to report. */}
+      {(import.meta.env.DEV ||
+        new URLSearchParams(window.location.search).has("debug")) && (
+        <DiagnosticsPanel
+          phase={phase}
+          message={message}
+          cameraError={cameraError}
+          windowId={windowIdRef.current}
+          remaining={remaining}
+        />
+      )}
     </div>
   );
 }
@@ -328,5 +408,78 @@ function Title({ children }: { children: React.ReactNode }) {
     <h1 className="font-display text-xl font-extrabold tracking-tight text-[color:var(--ink)]">
       {children}
     </h1>
+  );
+}
+
+function DiagnosticsPanel({
+  phase,
+  message,
+  cameraError,
+  windowId,
+  remaining,
+}: {
+  phase: string;
+  message: string;
+  cameraError: string | null;
+  windowId: string | null;
+  remaining: number;
+}) {
+  const [open, setOpen] = useState(false);
+  const [backendOk, setBackendOk] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(`${API_BASE}/healthz`, { signal: AbortSignal.timeout(5000) });
+        if (!cancelled) setBackendOk(r.ok);
+      } catch {
+        if (!cancelled) setBackendOk(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const check = (ok: boolean | null) =>
+    ok === null ? "⏳" : ok ? "✅" : "❌";
+
+  return (
+    <div className="mt-4 w-full max-w-sm">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center gap-1.5 text-[10px] uppercase tracking-wider text-[color:var(--muted)] hover:text-[color:var(--ink)]"
+      >
+        <ChevronDown
+          className={`h-3 w-3 transition-transform ${open ? "rotate-180" : ""}`}
+        />
+        Diagnostics
+      </button>
+      {open && (
+        <div className="mt-2 rounded-md border border-[color:var(--line)] bg-[color:var(--surface-2)] p-3 text-left font-mono text-[11px] leading-relaxed text-[color:var(--muted)]">
+          <div>{check(window.isSecureContext)} Secure context</div>
+          <div>
+            {check(cameraError === null && phase === "verifying")} Camera:{" "}
+            {cameraError ?? (phase === "verifying" ? "granted" : "pending")}
+          </div>
+          <div>{check(backendOk)} Backend reachable</div>
+          <div>
+            Phase: <span className="text-[color:var(--ink)]">{phase}</span>
+          </div>
+          {windowId && (
+            <div>
+              Window: <span className="text-[color:var(--ink)]">{windowId.slice(0, 8)}</span>{" "}
+              ({remaining}s left)
+            </div>
+          )}
+          {message && (
+            <div className="mt-1 text-[color:var(--warn)]">
+              Last: {message}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }

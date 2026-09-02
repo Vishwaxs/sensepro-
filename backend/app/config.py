@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     enrollment_json: str = "enrollments.json"  # dev: load roster from file
     # Known frontend origins only — never default to "*" on a service that
     # holds the server key and mints sessions.
-    allow_origins: str = "http://localhost:5173"
+    allow_origins: str = "http://localhost:5173,https://sensepro.sensepro.workers.dev"
 
     # Detection resolution. det_size is the SCRFD internal resize — the real
     # gate for small-face detection. A bigger send width with det_size 640
@@ -87,8 +87,24 @@ class Settings(BaseSettings):
     zone_front_band: float = 0.66
     zone_back_band: float = 0.33
 
+    # QR absentee verification — two independent clocks (ADR 0010).
+    # CLAIM TTL: how long a scanned token stays valid. Must be shorter than a
+    # relay attack (~20-35 s for photograph+send+open+claim). The QR rotates on
+    # this cadence; an expired token is rejected with "scan the new one".
+    qr_claim_ttl_s: int = 20
+    # VERIFICATION WINDOW: once a token is claimed (single-use, race over), the
+    # student has this many seconds to grant camera permission, frame their face,
+    # and submit the selfie. Generous — the anti-relay defence is the claim TTL.
+    qr_verify_window_s: int = 90
+    # Stricter cosine threshold for the selfie 1:1 match. The selfie is taken
+    # under controlled conditions (front camera, arm's length, cooperating
+    # subject), so a tighter gate reduces false accepts without hurting genuine
+    # students. Falls back to cosine_threshold if unset/0.
+    qr_verify_threshold: float = 0.50
+
     # Canonical frontend URL for emails, QR codes, and redirects
     frontend_url: str = ""
+
 
     @property
     def app_url(self) -> str:

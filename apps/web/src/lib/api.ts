@@ -25,25 +25,31 @@ interface ClerkWindow {
   Clerk?: {
     loaded?: boolean;
     session?: {
-      getToken: () => Promise<string | null>;
+      getToken: (options?: { skipCache?: boolean }) => Promise<string | null>;
     };
   };
 }
 
+export interface AuthTokenOptions {
+  forceRefresh?: boolean;
+}
+
 /** Resolves active auth token from Clerk session (or Supabase fallback). */
-export async function getAuthToken(): Promise<string | null> {
+export async function getAuthToken(options: AuthTokenOptions = {}): Promise<string | null> {
   if (typeof window !== "undefined") {
     let clerk = (window as unknown as ClerkWindow).Clerk;
     if (!clerk?.loaded) {
-      for (let i = 0; i < 25; i++) {
-        await new Promise((r) => setTimeout(r, 40));
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => setTimeout(r, 50));
         clerk = (window as unknown as ClerkWindow).Clerk;
         if (clerk?.loaded) break;
       }
     }
     if (clerk?.session) {
       try {
-        const token = await clerk.session.getToken();
+        const token = await clerk.session.getToken(
+          options.forceRefresh ? { skipCache: true } : undefined,
+        );
         if (token) return token;
       } catch {
         /* ignore */
@@ -60,8 +66,56 @@ export async function getAuthToken(): Promise<string | null> {
   }
 }
 
+export interface ApiReadyOptions {
+  timeoutMs?: number;
+  attemptTimeoutMs?: number;
+  retryDelayMs?: number;
+}
+
+/**
+ * Wait until the backend has completed startup before minting a short-lived
+ * credential for a protected capture request. `/healthz` is public and only a
+ * successful HTTP response is required here; its diagnostic payload is shown
+ * separately by the application shell.
+ */
+export async function waitForApiReady(options: ApiReadyOptions = {}): Promise<void> {
+  const timeoutMs = Math.max(1, options.timeoutMs ?? 90_000);
+  const attemptTimeoutMs = Math.max(250, options.attemptTimeoutMs ?? 12_000);
+  const retryDelayMs = Math.max(0, options.retryDelayMs ?? 1_000);
+  const deadline = Date.now() + timeoutMs;
+  let lastIssue = "the backend did not respond";
+
+  while (Date.now() < deadline) {
+    const remainingMs = deadline - Date.now();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.min(attemptTimeoutMs, remainingMs));
+    try {
+      const response = await fetch(`${API_BASE}/healthz`, {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (response.ok) return;
+      lastIssue = `readiness returned HTTP ${response.status}`;
+    } catch (error) {
+      lastIssue =
+        error instanceof Error && error.name !== "AbortError"
+          ? error.message
+          : "the readiness request timed out";
+    } finally {
+      clearTimeout(timer);
+    }
+
+    const pauseMs = Math.min(retryDelayMs, Math.max(0, deadline - Date.now()));
+    if (pauseMs > 0) await new Promise((resolve) => setTimeout(resolve, pauseMs));
+  }
+
+  throw new Error(
+    `Backend did not become ready within ${Math.ceil(timeoutMs / 1_000)} seconds (${lastIssue}).`,
+  );
+}
+
 /** Resolves authorization headers with Bearer token. */
-export async function authHeader(): Promise<Record<string, string>> {
-  const token = await getAuthToken();
+export async function authHeader(options: AuthTokenOptions = {}): Promise<Record<string, string>> {
+  const token = await getAuthToken(options);
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
