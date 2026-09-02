@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
-import { Loader2, QrCode, RefreshCw, X } from "lucide-react";
+import { CheckCircle2, Loader2, QrCode, RefreshCw, X } from "lucide-react";
 import { API_BASE, authHeader, claimBase } from "@/lib/api";
+import { supabase } from "@/lib/supabase/client";
 
 /**
  * Teacher-side absentee verification window. Mints a rotating, single-use token
@@ -13,10 +14,12 @@ export function AbsenteeQR({
   sessionId,
   apiBase = API_BASE,
   onClose,
+  onVerified,
 }: {
   sessionId: string;
   apiBase?: string;
   onClose?: () => void;
+  onVerified?: (studentId: string) => void;
 }) {
   const [token, setToken] = useState<string | null>(null);
   const [deadline, setDeadline] = useState<number>(0); // epoch ms
@@ -70,6 +73,9 @@ export function AbsenteeQR({
   }, [fetchToken]);
 
   // 1s countdown + auto-rotate a few seconds before expiry.
+  // With a 20s claim TTL, pre-rotating at 3s gives the QR 17s of visibility —
+  // comfortable for scanning — while leaving enough overlap for the mint
+  // round-trip. The old 8s overlap was designed for a 75s TTL.
   useEffect(() => {
     const id = window.setInterval(() => {
       const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
@@ -77,7 +83,7 @@ export function AbsenteeQR({
       if (Date.now() < retryAfter.current) return; // backing off after a failure
       // deadline === 0 means "no token yet" (first mint failed). Retry on the
       // backoff schedule rather than every second.
-      if (deadline === 0 || left <= 8) void fetchToken();
+      if (deadline === 0 || left <= 3) void fetchToken();
     }, 1000);
     return () => window.clearInterval(id);
   }, [deadline, fetchToken]);
@@ -99,6 +105,57 @@ export function AbsenteeQR({
       onClose?.();
     }
   }, [apiBase, sessionId, onClose]);
+
+  // Live feed of verified students — Realtime subscription on
+  // verification_windows. When a window is satisfied, the student's name
+  // appears on the teacher's screen so they can confirm the person is present.
+  const [verified, setVerified] = useState<{ name: string; at: number }[]>([]);
+  useEffect(() => {
+    const channel = supabase
+      .channel(`qr-verified-${sessionId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "verification_windows",
+          filter: `session_id=eq.${sessionId}`,
+        },
+        (payload) => {
+          const row = payload.new as {
+            satisfied_at: string | null;
+            student_id: string;
+          };
+          if (!row?.satisfied_at) return;
+          onVerified?.(row.student_id);
+          // Fetch the student name from the students table.
+          void (async () => {
+            try {
+              const { data } = await supabase
+                .from("students")
+                .select("full_name,reg_no")
+                .eq("id", row.student_id)
+                .limit(1)
+                .single();
+              const label = data?.full_name || data?.reg_no || row.student_id.slice(0, 8);
+              setVerified((prev) => [
+                { name: label, at: Date.now() },
+                ...prev.slice(0, 19),
+              ]);
+            } catch {
+              setVerified((prev) => [
+                { name: row.student_id.slice(0, 8), at: Date.now() },
+                ...prev.slice(0, 19),
+              ]);
+            }
+          })();
+        },
+      )
+      .subscribe();
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [sessionId]);
 
   const claimUrl = token ? `${claimBase()}/claim?token=${token}` : "";
 
@@ -153,6 +210,24 @@ export function AbsenteeQR({
           face.
         </p>
       </div>
+
+      {verified.length > 0 && (
+        <div className="mt-4 border-t border-[color:var(--line)] pt-3">
+          <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.2em] text-[color:var(--ok)]">
+            <CheckCircle2 className="h-3 w-3" /> Verified ({verified.length})
+          </div>
+          <ul className="mt-2 space-y-1">
+            {verified.map((v, i) => (
+              <li
+                key={`${v.name}-${v.at}-${i}`}
+                className="text-xs text-[color:var(--ink)] animate-in fade-in slide-in-from-top-1 duration-300"
+              >
+                {v.name}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }

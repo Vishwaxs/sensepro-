@@ -105,11 +105,10 @@ class Settings(BaseSettings):
     # Canonical frontend URL for emails, QR codes, and redirects
     frontend_url: str = ""
 
-
     @property
     def app_url(self) -> str:
         """Resolves the canonical public frontend URL for emails, QR codes, and redirects.
-        
+
         Priority:
         1. Explicit `frontend_url` / `FRONTEND_URL` env var (e.g. `https://sensepro-six.vercel.app`)
         2. First https:// origin in `allow_origins`

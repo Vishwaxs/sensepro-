@@ -38,8 +38,9 @@ def _summarise_zone_aggregates(rows: list[dict]) -> dict[str, dict]:
     """Build one honest workshop summary per session.
 
     Prefer the class row when a window has one; otherwise combine its zones.
-    VNEI is weighted by visible participants and coverage by enrolled zone size,
-    matching the live management and trends views.
+    VNEI is weighted by pose observations when available (with a duration-aware
+    legacy fallback), and coverage by enrolled participant-seconds. This keeps
+    a short final window from carrying the same weight as a complete window.
     """
     windows: dict[tuple[str, str], list[dict]] = {}
     for row in rows:
@@ -67,12 +68,17 @@ def _summarise_zone_aggregates(rows: list[dict]) -> dict[str, dict]:
         for row in report_rows:
             visible = max(int(row.get("n_tracked") or 0), 0)
             enrolled = max(int(row.get("enrolled_in_zone") or 0), 0)
-            if row.get("vnei") is not None and visible > 0:
-                total["vnei_sum"] += float(row["vnei"]) * visible
-                total["vnei_weight"] += visible
+            duration = max(int(row.get("window_s") or 60), 1)
+            signals = row.get("signals") if isinstance(row.get("signals"), dict) else {}
+            pose_observations = max(int(signals.get("pose_observations") or 0), 0)
+            vnei_weight = pose_observations or visible * duration
+            if row.get("vnei") is not None and vnei_weight > 0:
+                total["vnei_sum"] += float(row["vnei"]) * vnei_weight
+                total["vnei_weight"] += vnei_weight
             if row.get("coverage") is not None and enrolled > 0:
-                total["coverage_sum"] += float(row["coverage"]) * enrolled
-                total["coverage_weight"] += enrolled
+                coverage_weight = enrolled * duration
+                total["coverage_sum"] += float(row["coverage"]) * coverage_weight
+                total["coverage_weight"] += coverage_weight
 
     summaries: dict[str, dict] = {}
     for session_id, total in totals.items():
@@ -175,11 +181,13 @@ class PresenceWriter(Protocol):
     def create_session(
         self, class_section: str, subject: str | None, mode: str
     ) -> tuple[str, datetime]: ...
-    def end_session(self, session_id: str, ends_at: datetime) -> None: ...
+    def end_session(self, session_id: str, ends_at: datetime) -> bool | None: ...
     def open_interval(self, row: PresenceInterval) -> None: ...
     def close_interval(self, row: PresenceInterval) -> None: ...
     def create_flag(self, row: ProctorFlagRow) -> bool | None: ...
     def create_zone_aggregate(self, row: ZoneAggregateRow) -> bool | None: ...
+
+    def list_zone_aggregates(self, session_id: str) -> list[dict]: ...
 
 
 class NoopWriter:
@@ -207,6 +215,9 @@ class NoopWriter:
     def create_zone_aggregate(self, row: ZoneAggregateRow) -> bool:
         logger.debug("noop zone aggregate %s vnei=%s", row.zone, row.vnei)
         return False
+
+    def list_zone_aggregates(self, session_id: str) -> list[dict]:
+        return []
 
 
 class SupabaseWriter:
@@ -272,13 +283,15 @@ class SupabaseWriter:
         r.raise_for_status()
         return r.json()[0]["id"], starts_at
 
-    def end_session(self, session_id: str, ends_at: datetime) -> None:
+    def end_session(self, session_id: str, ends_at: datetime) -> bool:
         r = self._client.patch(
             "/class_sessions",
             params={"id": f"eq.{session_id}"},
+            headers={"Prefer": "return=representation"},
             json={"ends_at": _iso(ends_at)},
         )
         r.raise_for_status()
+        return bool(r.json())
 
     def open_interval(self, row: PresenceInterval) -> None:
         try:
@@ -322,6 +335,22 @@ class SupabaseWriter:
             logger.warning("zone aggregate dropped: %s (%s)", row.zone, exc)
             return False
 
+    def list_zone_aggregates(self, session_id: str) -> list[dict]:
+        """Return retained Tier-2 rows for one workshop, oldest window first."""
+        response = self._client.get(
+            "/engagement_zone_aggregates",
+            params={
+                "session_id": f"eq.{session_id}",
+                "select": (
+                    "id,session_id,window_start,window_s,zone,n_tracked,"
+                    "enrolled_in_zone,coverage,vnei,signals"
+                ),
+                "order": "window_start.asc,zone.asc",
+            },
+        )
+        response.raise_for_status()
+        return response.json()
+
     # ---------- QR absentee fallback (service-role) ----------
     def issue_qr_token(self, session_id: str, ttl_s: int) -> dict:
         """Invalidate any outstanding unused token for the session, then mint a
@@ -354,7 +383,7 @@ class SupabaseWriter:
             "/qr_tokens",
             params={
                 "token": f"eq.{token}",
-                "select": "session_id,expires_at,used_at",
+                "select": "session_id,issued_at,expires_at,used_at",
                 "limit": "1",
             },
         )
@@ -428,6 +457,25 @@ class SupabaseWriter:
         r.raise_for_status()
         rows = r.json()
         return rows[0] if rows else None
+
+    def has_verification_attempt(self, session_id: str, student_id: str) -> bool:
+        """True if this student already has ANY verification window for the session
+        (regardless of expiry or satisfaction). One attempt per session."""
+        try:
+            r = self._client.get(
+                "/verification_windows",
+                params={
+                    "session_id": f"eq.{session_id}",
+                    "student_id": f"eq.{student_id}",
+                    "select": "id",
+                    "limit": "1",
+                },
+            )
+            r.raise_for_status()
+            return bool(r.json())
+        except Exception as exc:
+            logger.warning("has_verification_attempt lookup failed: %s", exc)
+            return False
 
     def student_templates(self, student_id: str) -> list[dict]:
         """Every enrolled embedding for one student ({'student_id','vec'} rows),
@@ -518,17 +566,29 @@ class SupabaseWriter:
         self._client.post("/presence_intervals", json=row.open_payload()).raise_for_status()
 
     def student_by_auth_uid(self, auth_uid: str) -> dict | None:
-        r = self._client.get(
-            "/students",
-            params={
-                "auth_uid": f"eq.{auth_uid}",
-                "select": "id,reg_no,class_section",
-                "limit": "1",
-            },
-        )
-        r.raise_for_status()
-        rows = r.json()
-        return rows[0] if rows else None
+        import httpx
+
+        try:
+            r = self._client.get(
+                "/students",
+                params={
+                    "auth_uid": f"eq.{auth_uid}",
+                    "select": "id,reg_no,class_section",
+                    "limit": "1",
+                },
+            )
+            r.raise_for_status()
+            rows = r.json()
+            return rows[0] if rows else None
+        except httpx.HTTPStatusError as exc:
+            # When auth_uid is non-UUID (such as Clerk user_...) and the DB column
+            # is uuid, PostgREST returns 400. Catch it and return None safely
+            # so the caller can return a clean 403 instead of a crashing 500.
+            logger.warning("student_by_auth_uid HTTP error for %s: %s", auth_uid, exc)
+            return None
+        except Exception as exc:
+            logger.error("student_by_auth_uid error for %s: %s", auth_uid, exc)
+            return None
 
     def role_for_auth_uid(self, auth_uid: str) -> str | None:
         """The user's app_role from user_roles — the source of truth, read with
@@ -609,7 +669,7 @@ class SupabaseWriter:
             "/class_sessions",
             params={
                 "id": f"eq.{session_id}",
-                "select": "id,mode,starts_at,ends_at",
+                "select": "id,class_section,subject,mode,starts_at,ends_at",
                 "limit": "1",
             },
         )
@@ -703,7 +763,8 @@ class SupabaseWriter:
                     params={
                         "session_id": f"in.({','.join(workshop_ids)})",
                         "select": (
-                            "session_id,window_start,zone,n_tracked,enrolled_in_zone,vnei,coverage"
+                            "session_id,window_start,window_s,zone,n_tracked,"
+                            "enrolled_in_zone,vnei,coverage,signals"
                         ),
                     },
                 )

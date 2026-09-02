@@ -23,9 +23,11 @@ import {
 import { AbsenteeQR } from "@/components/sp/AbsenteeQR";
 import { ConnectionBadge, type ConnState } from "@/components/sp/ConnectionBadge";
 import { cn } from "@/lib/utils";
+import { supabase } from "@/lib/supabase/client";
 import { guardRoute } from "@/lib/auth-guard";
-import { API_BASE, authHeader, getAuthToken } from "@/lib/api";
+import { API_BASE, authHeader, getAuthToken, waitForApiReady } from "@/lib/api";
 import { cameraBlockReason, describeCameraError } from "@/lib/camera";
+import { fetchZoneAggregates } from "@/lib/data/engagement";
 
 // Sentinel device ID for the backend-side RTSP camera source.
 const RTSP_SOURCE = "__rtsp__";
@@ -66,6 +68,7 @@ interface SessionRosterEntry {
   first_seen_ts: number;
   last_seen_ts: number;
   isLive: boolean;
+  via?: "camera" | "qr" | "override";
 }
 
 interface WsTransition {
@@ -109,6 +112,7 @@ interface WsProctor {
   flags: WsProctorFlag[]; // flags raised THIS frame only
   backend?: string | null;
   ready?: boolean;
+  production?: boolean;
   poses?: WsProctorPose[];
 }
 interface WsEngagement {
@@ -147,6 +151,7 @@ interface WsEngagement {
   window_s?: number;
   persisted?: boolean | number;
 }
+type EngagementWindowStatus = NonNullable<WsEngagement["window"]>;
 interface WsResult {
   type: "result";
   ts: number;
@@ -175,6 +180,7 @@ interface ProctorLiveState {
   phoneOwner: string | null;
   backend: string | null;
   ready: boolean | null;
+  production: boolean | null;
   poses: WsProctorPose[];
 }
 
@@ -198,6 +204,9 @@ interface SavedSummary {
   flags: number;
   elapsed: number;
   engagement: WsEngagement | null;
+  engagementWindow: EngagementWindowStatus | null;
+  retainedAggregateRows: number;
+  retainedWindows: number;
   confirmed: boolean;
   warning?: string;
 }
@@ -255,6 +264,33 @@ function captureMode(): SessionMode {
   return mode === "exam" || mode === "workshop" ? mode : "lecture";
 }
 
+function workshopWindowLabel(window: EngagementWindowStatus | null): string {
+  const state = window?.last_window?.state;
+  if (state === "reported") return "Retained";
+  if (state === "withheld") return "Withheld";
+  return "No window";
+}
+
+function workshopWindowMessage(
+  window: EngagementWindowStatus | null,
+  retainedWindows: number,
+): string {
+  const state = window?.last_window?.state;
+  if (retainedWindows > 0 && state === "withheld") {
+    return `${retainedWindows} earlier aggregate window${retainedWindows === 1 ? " was" : "s were"} retained; the final window was withheld and no zero was inferred.`;
+  }
+  if (retainedWindows > 0) {
+    return `${retainedWindows} persisted aggregate window${retainedWindows === 1 ? " is" : "s are"} available in workshop history.`;
+  }
+  if (state === "reported") {
+    return "The final window was acknowledged, but no retained workshop history rows were returned.";
+  }
+  if (state === "withheld") {
+    return "The final aggregate window was withheld by its privacy, observability, or persistence gates; no zero was inferred.";
+  }
+  return "No final closed workshop aggregate window was confirmed.";
+}
+
 function CapturePage() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const overlayRef = useRef<HTMLCanvasElement | null>(null);
@@ -295,7 +331,12 @@ function CapturePage() {
   // server acks the end (or on a timeout fallback).
   const stoppingRef = useRef(false);
   const endAckRef = useRef<
-    null | ((result: { persisted: boolean; warning: string | null }) => void)
+    | null
+    | ((result: {
+        persisted: boolean;
+        warning: string | null;
+        engagementWindow: EngagementWindowStatus | null;
+      }) => void)
   >(null);
   // Mirrors `present` for saveAndEnd (avoids a stale closure on click and
   // avoids recreating the callback on every WS message).
@@ -344,23 +385,90 @@ function CapturePage() {
   // backend/app/rtsp_api.py rtsp_feed). Held in state because getSession() is
   // async and the <img> needs a concrete URL at render time.
   const [feedToken, setFeedToken] = useState<string | null>(null);
-  // Same token, in a ref: openSocket is a useCallback that reconnects on a
-  // timer, and reading state there would capture a stale value.
-  const accessTokenRef = useRef<string | null>(null);
+  const feedRefreshAttemptedRef = useRef(false);
+  const feedRefreshInFlightRef = useRef(false);
+  const apiReadyRef = useRef<Promise<void> | null>(null);
+  const startupAuthorizationRef = useRef<Promise<Record<string, string>> | null>(null);
+
+  const ensureCaptureApiReady = useCallback((): Promise<void> => {
+    if (captureMode() === "lecture") return Promise.resolve();
+    if (!apiReadyRef.current) {
+      const pending = waitForApiReady();
+      apiReadyRef.current = pending;
+      void pending.catch(() => {
+        if (apiReadyRef.current === pending) apiReadyRef.current = null;
+      });
+    }
+    return apiReadyRef.current;
+  }, []);
+
+  const getCaptureAuthorization = useCallback((): Promise<Record<string, string>> => {
+    if (!startupAuthorizationRef.current) {
+      const mode = captureMode();
+      const pending = (async () => {
+        await ensureCaptureApiReady();
+        const authorization = await authHeader({ forceRefresh: mode !== "lecture" });
+        if (mode !== "lecture" && !authorization.Authorization) {
+          throw new Error("Your sign-in session could not be refreshed. Sign in again.");
+        }
+        return authorization;
+      })();
+      startupAuthorizationRef.current = pending;
+      void pending
+        .finally(() => {
+          if (startupAuthorizationRef.current === pending) startupAuthorizationRef.current = null;
+        })
+        .catch(() => {});
+    }
+    return startupAuthorizationRef.current;
+  }, [ensureCaptureApiReady]);
 
   useEffect(() => {
     let cancelled = false;
-    void getAuthToken().then((token) => {
-      if (!cancelled && token) {
-        setFeedToken(token);
-        accessTokenRef.current = token;
-      }
-    });
+    void getCaptureAuthorization()
+      .then((authorization) => {
+        const bearer = authorization.Authorization;
+        const token = bearer?.startsWith("Bearer ") ? bearer.slice(7) : null;
+        if (!cancelled && token) setFeedToken(token);
+      })
+      .catch((error) => {
+        if (!cancelled && captureMode() !== "lecture") {
+          setPermError(error instanceof Error ? error.message : "Backend readiness failed.");
+        }
+      });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [getCaptureAuthorization]);
+
+  const refreshFeedToken = useCallback(async () => {
+    if (feedRefreshInFlightRef.current) return;
+    if (feedRefreshAttemptedRef.current) {
+      setPermError("The secure RTSP feed could not be opened. Refresh your sign-in and try again.");
+      return;
+    }
+
+    feedRefreshAttemptedRef.current = true;
+    feedRefreshInFlightRef.current = true;
+    try {
+      const token = await getAuthToken({ forceRefresh: true });
+      if (!token) {
+        setPermError(
+          "Your sign-in session could not be refreshed. Sign in again to view the feed.",
+        );
+        return;
+      }
+      if (token === feedToken) {
+        setPermError("The secure RTSP feed could not be opened with a refreshed credential.");
+        return;
+      }
+      setFeedToken(token);
+    } finally {
+      feedRefreshInFlightRef.current = false;
+    }
+  }, [feedToken]);
   const [present, setPresent] = useState<WsPresentRow[]>([]);
+  const [visibleFaces, setVisibleFaces] = useState(0);
   const [sessionRoster, setSessionRoster] = useState<SessionRosterEntry[]>([]);
   const sessionRosterRef = useRef<Map<string, SessionRosterEntry>>(new Map());
   const [toasts, setToasts] = useState<{ id: string; text: string; kind: WsTransition["kind"] }[]>(
@@ -382,8 +490,42 @@ function CapturePage() {
     phoneOwner: null,
     backend: null,
     ready: null,
+    production: null,
     poses: [],
   });
+  const updateExamCandidates = useCallback((studentIds: (string | null | undefined)[]) => {
+    const nowSec = Date.now() / 1000;
+    const currentIds = new Set(
+      studentIds.filter((id): id is string => typeof id === "string" && id.length > 0),
+    );
+    const rosterMap = sessionRosterRef.current;
+
+    for (const [id, candidate] of rosterMap.entries()) {
+      candidate.isLive = currentIds.has(id);
+    }
+    for (const id of currentIds) {
+      const info = nameMapRef.current.get(id);
+      const existing = rosterMap.get(id);
+      if (existing) {
+        existing.last_seen_ts = nowSec;
+        existing.isLive = true;
+        if (info) {
+          existing.name = info.name;
+          existing.reg_no = info.reg_no;
+        }
+      } else {
+        rosterMap.set(id, {
+          student_id: id,
+          name: info?.name ?? id,
+          reg_no: info?.reg_no ?? id,
+          first_seen_ts: nowSec,
+          last_seen_ts: nowSec,
+          isLive: true,
+        });
+      }
+    }
+    setSessionRoster(Array.from(rosterMap.values()));
+  }, []);
   // Set true the first time the server sends a `proctor` view (exam mode) —
   // server-driven, not client-guessed, so the panel appears correctly even if
   // /capture was opened directly without the /start wizard's ?mode=exam.
@@ -474,7 +616,7 @@ function CapturePage() {
     (async () => {
       try {
         const response = await fetch(`${API_BASE}/v1/rtsp/capabilities`, {
-          headers: await authHeader(),
+          headers: await getCaptureAuthorization(),
         });
         if (!response.ok) throw new Error(`RTSP capabilities ${response.status}`);
         const payload = (await response.json()) as RtspCapabilityPayload;
@@ -486,7 +628,7 @@ function CapturePage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [getCaptureAuthorization]);
 
   // Load the class roster once, from the backend /v1/roster endpoint (NOT a
   // direct browser `students` read — that is RLS-gated on app_role, which the
@@ -508,7 +650,7 @@ function CapturePage() {
       try {
         const res = await fetch(
           `${API_BASE}/v1/roster?class_section=${encodeURIComponent(sessionInfo.section)}`,
-          { headers: await authHeader() },
+          { headers: await getCaptureAuthorization() },
         );
         if (!res.ok) throw new Error(`Roster request failed with ${res.status}`);
         const data = (await res.json()) as {
@@ -531,7 +673,7 @@ function CapturePage() {
     return () => {
       alive = false;
     };
-  }, [isWorkshopMode, sessionInfo.section]);
+  }, [getCaptureAuthorization, isWorkshopMode, sessionInfo.section]);
 
   // Keep runningRef current for the WS reconnect decision (see openSocket).
   useEffect(() => {
@@ -589,8 +731,10 @@ function CapturePage() {
               : null,
             backend: payload.proctor.backend ?? null,
             ready: payload.proctor.ready ?? null,
+            production: payload.proctor.production ?? null,
             poses: payload.proctor.poses ?? [],
           });
+          updateExamCandidates((payload.proctor.poses ?? []).map((pose) => pose.student_id));
 
           const flags = payload.proctor.flags ?? [];
           const signature = JSON.stringify(flags);
@@ -613,7 +757,10 @@ function CapturePage() {
           }
         }
 
-        if (payload.engagement) setEngagement(payload.engagement);
+        if (payload.engagement) {
+          setEngagement(payload.engagement);
+          setVisibleFaces(payload.engagement.visible);
+        }
       } catch (error) {
         if (!cancelled) {
           setRtspStatusError(error instanceof Error ? error.message : "RTSP status unavailable");
@@ -627,7 +774,7 @@ function CapturePage() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [isExamMode, isRtsp, rtspSessionId, running]);
+  }, [isExamMode, isRtsp, rtspSessionId, running, updateExamCandidates]);
 
   // Overlay resize + redraw
   useEffect(() => {
@@ -779,6 +926,97 @@ function CapturePage() {
     }, 3600);
   }, []);
 
+  const markStudentPresent = useCallback(
+    (sid: string, via: "camera" | "qr" | "override" = "camera") => {
+      setAttended((prev) => new Set([...prev, sid]));
+      const rosterMap = sessionRosterRef.current;
+      const nowSec = Date.now() / 1000;
+      const info = nameMapRef.current.get(sid);
+      const studentName = info?.name ?? sid;
+      const studentReg = info?.reg_no ?? sid;
+
+      const existing = rosterMap.get(sid);
+      if (existing) {
+        if (via === "qr") existing.via = "qr";
+      } else {
+        rosterMap.set(sid, {
+          student_id: sid,
+          name: studentName,
+          reg_no: studentReg,
+          first_seen_ts: nowSec,
+          last_seen_ts: nowSec,
+          isLive: false,
+          via,
+        });
+      }
+      setSessionRoster(Array.from(rosterMap.values()));
+      if (via === "qr") {
+        pushToast(`${studentName} verified via QR`, "recognised");
+      }
+    },
+    [pushToast],
+  );
+
+  // Synchronize presence intervals recorded in the database (e.g. Absentee QR selfies)
+  useEffect(() => {
+    if (!isLectureMode || !running) return;
+    const currentSid = sessionIdRef.current || rtspSessionId;
+    if (!currentSid) return;
+
+    // 1. Sync any existing presence records for this session
+    void (async () => {
+      try {
+        const { data } = await supabase
+          .from("presence_intervals")
+          .select("student_id, state, via")
+          .eq("session_id", currentSid)
+          .eq("state", "PRESENT");
+
+        if (Array.isArray(data)) {
+          for (const row of data) {
+            markStudentPresent(
+              row.student_id,
+              (row.via as "camera" | "qr" | "override") || "camera",
+            );
+          }
+        }
+      } catch (err) {
+        console.warn("[capture] initial presence sync warning", err);
+      }
+    })();
+
+    // 2. Realtime listener for live QR check-ins
+    const channel = supabase
+      .channel(`capture-presence-${currentSid}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "presence_intervals",
+          filter: `session_id=eq.${currentSid}`,
+        },
+        (payload) => {
+          const row = payload.new as {
+            student_id: string;
+            state: string;
+            via?: string;
+          };
+          if (row?.state === "PRESENT") {
+            markStudentPresent(
+              row.student_id,
+              (row.via as "camera" | "qr" | "override") || "qr",
+            );
+          }
+        },
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [isLectureMode, markStudentPresent, rtspSessionId, running]);
+
   const handleWsMessage = useCallback(
     (ev: MessageEvent) => {
       try {
@@ -790,6 +1028,10 @@ function CapturePage() {
             endAckRef.current({
               persisted: data.persisted === true,
               warning: typeof data.warning === "string" ? data.warning : null,
+              engagementWindow:
+                data.engagement?.window && typeof data.engagement.window === "object"
+                  ? (data.engagement.window as EngagementWindowStatus)
+                  : null,
             });
             endAckRef.current = null;
           }
@@ -828,6 +1070,7 @@ function CapturePage() {
         const now = performance.now();
         const easeOut = (t: number) => 1 - Math.pow(1 - t, 3);
         const seen = new Set<number>();
+        setVisibleFaces(msg.faces.length);
         for (const f of msg.faces) {
           seen.add(f.track_id);
           const cur = tracksRef.current.get(f.track_id);
@@ -862,12 +1105,15 @@ function CapturePage() {
             cur.score = f.score;
           }
         }
+        if (isExamMode) {
+          updateExamCandidates(msg.faces.map((face) => face.student_id));
+        }
         // Drop tracks the server hasn't emitted for a while.
         for (const [id, v] of tracksRef.current) {
           if (!seen.has(id) && now - v.lastSeenTs > 800) tracksRef.current.delete(id);
         }
         setStale(false);
-        if (msg.present) {
+        if (isLectureMode && msg.present) {
           // The lean contract sends bare id strings; the demo seed sends full
           // rows. Normalise both to WsPresentRow, resolving names + timing first
           // appearance locally so the panel never crashes on undefined fields.
@@ -926,9 +1172,9 @@ function CapturePage() {
         }
         // Cumulative attendance: the backend sends the full attended set on
         // every result. Merge into state (never shrinks — attended is permanent).
-        if (!isWorkshopMode && Array.isArray(msg.attended)) {
-          const attendedSet = new Set(msg.attended);
-          setAttended(attendedSet);
+        if (isLectureMode && Array.isArray(msg.attended)) {
+          const newAttended = msg.attended;
+          setAttended((prev) => new Set([...prev, ...newAttended]));
           const rosterMap = sessionRosterRef.current;
           let changed = false;
           const nowSec = Date.now() / 1000;
@@ -942,6 +1188,7 @@ function CapturePage() {
                 first_seen_ts: nowSec,
                 last_seen_ts: nowSec,
                 isLive: false,
+                via: "camera",
               });
               changed = true;
             }
@@ -950,24 +1197,21 @@ function CapturePage() {
             setSessionRoster(Array.from(rosterMap.values()));
           }
         }
-        for (const t of msg.transitions ?? []) {
-          // Prefer a rich server shape; otherwise derive kind/name from the lean
-          // {student_id, state} the pipeline currently emits.
-          const name =
-            t.name ??
-            (t.student_id ? (nameMapRef.current.get(t.student_id)?.name ?? t.student_id) : "");
-          const kind =
-            t.kind ??
-            (t.state === "PRESENT" ? "recognised" : t.state === "ABSENT" ? "leave" : undefined);
-          if (!name || !kind) continue;
-          const displayName = isWorkshopMode ? "Participant" : name;
-          if (kind === "enter") pushToast(`${displayName} entered view`, "enter");
-          else if (kind === "recognised")
-            pushToast(
-              isWorkshopMode ? "Participant signal acquired" : `${displayName} recognised`,
-              "recognised",
-            );
-          else if (kind === "leave") pushToast(`${displayName} left view`, "leave");
+        if (isLectureMode) {
+          for (const t of msg.transitions ?? []) {
+            // Prefer a rich server shape; otherwise derive kind/name from the lean
+            // {student_id, state} the pipeline currently emits.
+            const name =
+              t.name ??
+              (t.student_id ? (nameMapRef.current.get(t.student_id)?.name ?? t.student_id) : "");
+            const kind =
+              t.kind ??
+              (t.state === "PRESENT" ? "recognised" : t.state === "ABSENT" ? "leave" : undefined);
+            if (!name || !kind) continue;
+            if (kind === "enter") pushToast(`${name} entered view`, "enter");
+            else if (kind === "recognised") pushToast(`${name} recognised`, "recognised");
+            else if (kind === "leave") pushToast(`${name} left view`, "leave");
+          }
         }
 
         // Proctor (exam mode): stash detections for the overlay, reflect live
@@ -984,6 +1228,7 @@ function CapturePage() {
               : null,
             backend: msg.proctor.backend ?? null,
             ready: msg.proctor.ready ?? null,
+            production: msg.proctor.production ?? null,
             poses: msg.proctor.poses ?? [],
           });
           for (const f of msg.proctor.flags ?? []) {
@@ -1007,7 +1252,7 @@ function CapturePage() {
         /* malformed WS payload — ignore this frame */
       }
     },
-    [isExamMode, isWorkshopMode, pushToast],
+    [isExamMode, isLectureMode, isWorkshopMode, pushToast, updateExamCandidates],
   );
 
   const openSocket = useCallback(async () => {
@@ -1024,15 +1269,18 @@ function CapturePage() {
     // A WebSocket handshake cannot carry an Authorization header, so the
     // short-lived access token travels as a query parameter, same as the MJPEG
     // feed. Without it the server closes the socket with 1008.
-    let token = accessTokenRef.current;
+    const token = await getAuthToken({ forceRefresh: true });
     if (!token) {
-      token = await getAuthToken();
-      if (token) {
-        accessTokenRef.current = token;
-        setFeedToken(token);
-      }
+      setConn("OFFLINE");
+      setStale(true);
+      setPermError(
+        "Your sign-in session could not be refreshed. Sign in again before starting capture.",
+      );
+      return;
     }
-    if (token) params.set("token", token);
+    feedRefreshAttemptedRef.current = false;
+    setFeedToken(token);
+    params.set("token", token);
     // VITE_WS_URL may legitimately carry its own query string in production
     // (a host that routes on one), so pick the separator instead of always
     // appending "?" and producing a second, ignored query.
@@ -1048,9 +1296,25 @@ function CapturePage() {
         setWsAttempt(0);
       };
       ws.onmessage = handleWsMessage;
-      ws.onclose = () => {
+      ws.onclose = (event: CloseEvent) => {
         setConn("OFFLINE");
         setStale(true);
+        // 1008 = policy violation. The backend rejected the handshake for a
+        // concrete reason (session ended, wrong mode, unauthorized). Retrying
+        // with the same parameters will never succeed — stop the loop and
+        // surface the reason so the operator can act (start a new session).
+        if (event.code === 1008) {
+          if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
+          const reason =
+            event.reason || "Session is invalid, ended, or unauthorized. Start a new session.";
+          setPermError(reason);
+          // Clear the dead session ref so a subsequent start() provisions a
+          // fresh active session instead of retrying the stale one.
+          sessionIdRef.current = null;
+          setRtspSessionId(null);
+          setRunning(false);
+          return;
+        }
         // Don't reconnect if we're intentionally ending the session.
         if (runningRef.current && !stoppingRef.current) {
           if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
@@ -1110,10 +1374,14 @@ function CapturePage() {
 
   const closeSessionRecord = useCallback(async (sessionId: string): Promise<string | null> => {
     try {
-      const response = await fetch(`${API_BASE}/v1/sessions/${sessionId}/end`, {
-        method: "POST",
-        headers: await authHeader(),
-      });
+      const mode = captureMode();
+      const response = await fetch(
+        `${API_BASE}/v1/sessions/${sessionId}/end?mode=${encodeURIComponent(mode)}`,
+        {
+          method: "POST",
+          headers: await authHeader(),
+        },
+      );
       if (!response.ok) return `session close failed (${response.status})`;
       return null;
     } catch (error) {
@@ -1130,10 +1398,10 @@ function CapturePage() {
     let sessionId = sessionIdRef.current;
     try {
       const mode = captureMode();
+      const headers = await getCaptureAuthorization();
       // 1. Reuse the session the /start wizard already created; only open one
       // here if the user came straight to /capture (bookmark, demo, etc).
       if (!sessionId) {
-        const headers = await authHeader();
         const res = await fetch(`${API_BASE}/v1/sessions`, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...headers },
@@ -1150,7 +1418,6 @@ function CapturePage() {
       setRtspSessionId(sessionId);
 
       // 2. Kick off the RTSP capture runner on the backend
-      const headers = await authHeader();
       const startRes = await fetch(`${API_BASE}/v1/rtsp/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...headers },
@@ -1164,9 +1431,17 @@ function CapturePage() {
       startEpochRef.current = Date.now();
       setElapsed(0);
       setPresent([]);
+      setVisibleFaces(0);
       presentRef.current = [];
       setProctorFlags([]);
-      setProctorLive({ phone: false, phoneOwner: null, backend: null, ready: null, poses: [] });
+      setProctorLive({
+        phone: false,
+        phoneOwner: null,
+        backend: null,
+        ready: null,
+        production: null,
+        poses: [],
+      });
       setExamMode(false);
       setEngagement(null);
       setPipelineError(null);
@@ -1189,7 +1464,14 @@ function CapturePage() {
       setRtspSessionId(null);
       setPermError(closeWarning ? `${message}. Cleanup warning: ${closeWarning}.` : message);
     }
-  }, [closeSessionRecord, isLectureMode, openSocket, rtspCapability, sessionInfo]);
+  }, [
+    closeSessionRecord,
+    getCaptureAuthorization,
+    isLectureMode,
+    openSocket,
+    rtspCapability,
+    sessionInfo,
+  ]);
 
   const start = useCallback(async () => {
     setSettingsOpen(false);
@@ -1205,12 +1487,13 @@ function CapturePage() {
       return;
     }
     try {
+      if (!isLectureMode) await ensureCaptureApiReady();
       // Exam and workshop telemetry is only useful when it can attach to a
       // persisted session. Lecture keeps its established offline capture
       // fallback; the other modes fail closed before opening a camera.
       if (!sessionIdRef.current) {
         try {
-          const headers = await authHeader();
+          const headers = await getCaptureAuthorization();
           const res = await fetch(`${API_BASE}/v1/sessions`, {
             method: "POST",
             headers: { "Content-Type": "application/json", ...headers },
@@ -1268,11 +1551,19 @@ function CapturePage() {
       startEpochRef.current = Date.now();
       setElapsed(0);
       setPresent([]);
+      setVisibleFaces(0);
       presentRef.current = [];
       sessionRosterRef.current.clear();
       setSessionRoster([]);
       setProctorFlags([]);
-      setProctorLive({ phone: false, phoneOwner: null, backend: null, ready: null, poses: [] });
+      setProctorLive({
+        phone: false,
+        phoneOwner: null,
+        backend: null,
+        ready: null,
+        production: null,
+        poses: [],
+      });
       setExamMode(false);
       setEngagement(null);
       setPipelineError(null);
@@ -1303,6 +1594,8 @@ function CapturePage() {
   }, [
     closeSessionRecord,
     deviceId,
+    ensureCaptureApiReady,
+    getCaptureAuthorization,
     isExamMode,
     isLectureMode,
     isRtsp,
@@ -1344,69 +1637,85 @@ function CapturePage() {
     tracksRef.current.clear();
   }, []);
 
-  const endRtspSession = useCallback(async (sessionId: string) => {
-    const failures: string[] = [];
+  const endRtspSession = useCallback(
+    async (sessionId: string) => {
+      const failures: string[] = [];
+      let stopConfirmed = false;
+      let statusCheckFailed = false;
+      let engagementWindow: EngagementWindowStatus | null = null;
 
-    try {
-      const headers = { "Content-Type": "application/json", ...(await authHeader()) };
-      const stopResponse = await fetch(`${API_BASE}/v1/rtsp/stop`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ session_id: sessionId }),
-      });
-      if (!stopResponse.ok && stopResponse.status !== 404) {
-        failures.push(`camera stop failed (${stopResponse.status})`);
-      }
-    } catch (error) {
-      failures.push(error instanceof Error ? error.message : "camera stop failed");
-    }
-
-    // Give the capture thread a brief opportunity to flush trailing telemetry.
-    // The status endpoint is optional for compatibility with older deployments.
-    try {
-      for (let attempt = 0; attempt < 6; attempt++) {
-        const statusResponse = await fetch(`${API_BASE}/v1/rtsp/status/${sessionId}`, {
-          headers: await authHeader(),
+      try {
+        const headers = { "Content-Type": "application/json", ...(await authHeader()) };
+        const stopResponse = await fetch(`${API_BASE}/v1/rtsp/stop`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ session_id: sessionId }),
         });
-        if (statusResponse.status === 404) {
-          await new Promise((resolve) => window.setTimeout(resolve, 300));
-          break;
+        if (!stopResponse.ok && stopResponse.status !== 404) {
+          failures.push(`camera stop failed (${stopResponse.status})`);
         }
-        if (!statusResponse.ok) {
-          failures.push(`status check failed (${statusResponse.status})`);
-          break;
-        }
-        const status = (await statusResponse.json()) as RtspStatusPayload;
-        const stopped =
-          status.running === false ||
-          status.status === "stopped" ||
-          status.status === "idle" ||
-          status.status === "complete";
-        if (stopped) break;
-        await new Promise((resolve) => window.setTimeout(resolve, 300));
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : "camera stop failed");
       }
-    } catch (error) {
-      failures.push(error instanceof Error ? error.message : "status check failed");
-    }
 
-    // Closing the logical session is independent from stopping or observing the
-    // camera runner. Always attempt it so one failed status request cannot strand
-    // a session in progress.
-    try {
-      const endResponse = await fetch(`${API_BASE}/v1/sessions/${sessionId}/end`, {
-        method: "POST",
-        headers: await authHeader(),
-      });
-      if (!endResponse.ok) failures.push(`session close failed (${endResponse.status})`);
-    } catch (error) {
-      failures.push(error instanceof Error ? error.message : "session close failed");
-    }
+      // Wait for the capture worker to publish its terminal state and final
+      // engagement window. A successful stop request alone does not prove that
+      // trailing workshop aggregates were flushed.
+      try {
+        for (let attempt = 0; attempt < 20; attempt++) {
+          const statusResponse = await fetch(`${API_BASE}/v1/rtsp/status/${sessionId}`, {
+            headers: await authHeader(),
+          });
+          if (statusResponse.status === 404) {
+            failures.push("final camera status was unavailable");
+            statusCheckFailed = true;
+            break;
+          }
+          if (!statusResponse.ok) {
+            failures.push(`status check failed (${statusResponse.status})`);
+            statusCheckFailed = true;
+            break;
+          }
+          const status = (await statusResponse.json()) as RtspStatusPayload;
+          engagementWindow = status.engagement?.window ?? engagementWindow;
+          if (status.status === "error") {
+            stopConfirmed = true;
+            failures.push(status.error ?? "camera worker ended with an error");
+            break;
+          }
+          const stopped =
+            status.running === false ||
+            status.status === "stopped" ||
+            status.status === "idle" ||
+            status.status === "complete";
+          if (stopped) {
+            stopConfirmed = true;
+            break;
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 300));
+        }
+      } catch (error) {
+        statusCheckFailed = true;
+        failures.push(error instanceof Error ? error.message : "status check failed");
+      }
+      if (!stopConfirmed && !statusCheckFailed) {
+        failures.push("camera worker did not confirm its final flush in time");
+      }
 
-    return {
-      confirmed: failures.length === 0,
-      warning: failures.length > 0 ? failures.join(" · ") : undefined,
-    };
-  }, []);
+      // Closing the logical session is independent from stopping or observing the
+      // camera runner. Always attempt it so one failed status request cannot strand
+      // a session in progress.
+      const closeWarning = await closeSessionRecord(sessionId);
+      if (closeWarning) failures.push(closeWarning);
+
+      return {
+        confirmed: failures.length === 0,
+        warning: failures.length > 0 ? failures.join("; ") : undefined,
+        engagementWindow,
+      };
+    },
+    [closeSessionRecord],
+  );
 
   // Unmount / abrupt stop: fire an end frame if the webcam socket is open, or
   // start the authenticated RTSP stop + session-close sequence, then release
@@ -1458,34 +1767,84 @@ function CapturePage() {
       flags: proctorFlags.length,
       elapsed,
       engagement,
+      engagementWindow: null,
+      retainedAggregateRows: 0,
+      retainedWindows: 0,
     };
-    const finalize = (confirmed = true, warning?: string) => {
+    const finalize = async (
+      confirmed = true,
+      warning?: string,
+      engagementWindow: EngagementWindowStatus | null = null,
+    ) => {
       teardown();
       setRtspSessionId(null);
-      setSavedSummary({ ...snapshot, confirmed, warning });
+      let retainedAggregateRows = 0;
+      let retainedWindows = 0;
+      let finalConfirmed = confirmed;
+      let finalWarning = warning;
+      const historySessionId = attachedSessionId ?? rtspSessionId;
+      if (isWorkshopMode) {
+        if (historySessionId) {
+          try {
+            const rows = await fetchZoneAggregates(historySessionId);
+            retainedAggregateRows = rows.length;
+            retainedWindows = new Set(rows.map((row) => row.window_start)).size;
+            if (engagementWindow?.last_window?.state === "reported" && rows.length === 0) {
+              finalConfirmed = false;
+              finalWarning = [
+                finalWarning,
+                "The final window was acknowledged, but workshop history returned no retained rows.",
+              ]
+                .filter(Boolean)
+                .join(" ");
+            }
+          } catch (error) {
+            finalConfirmed = false;
+            const detail = error instanceof Error ? error.message : "workshop history unavailable";
+            finalWarning = [finalWarning, `Workshop history verification failed: ${detail}`]
+              .filter(Boolean)
+              .join(" ");
+          }
+        } else {
+          finalConfirmed = false;
+          finalWarning = [finalWarning, "No persisted workshop session was attached."]
+            .filter(Boolean)
+            .join(" ");
+        }
+      }
+      setSavedSummary({
+        ...snapshot,
+        engagementWindow,
+        retainedAggregateRows,
+        retainedWindows,
+        confirmed: finalConfirmed,
+        warning: finalWarning,
+      });
     };
 
     if (isRtsp) {
       const sessionId = rtspSessionId ?? sessionIdRef.current;
       if (!sessionId) {
-        finalize(false, "No persisted RTSP session was attached.");
+        await finalize(false, "No persisted RTSP session was attached.");
         return;
       }
       const result = await endRtspSession(sessionId);
-      finalize(result.confirmed, result.warning);
+      await finalize(result.confirmed, result.warning, result.engagementWindow);
       return;
     }
 
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       stoppingRef.current = true; // stop the reconnect loop while we close out
-      endAckRef.current = ({ persisted, warning }) =>
-        finalize(
+      endAckRef.current = ({ persisted, warning, engagementWindow }) => {
+        void finalize(
           persisted,
           persisted
             ? undefined
             : (warning ?? "The server could not persist the final session write."),
+          engagementWindow,
         );
+      };
       try {
         ws.send(JSON.stringify({ type: "end", ts: captureTimestamp() }));
       } catch {
@@ -1501,7 +1860,7 @@ function CapturePage() {
               attachedSessionId && !isLectureMode
                 ? await closeSessionRecord(attachedSessionId)
                 : null;
-            finalize(
+            await finalize(
               false,
               closeWarning
                 ? `The server did not confirm the final write; ${closeWarning}.`
@@ -1515,7 +1874,7 @@ function CapturePage() {
         attachedSessionId && !isLectureMode
           ? await closeSessionRecord(attachedSessionId)
           : "no persisted session was attached";
-      finalize(
+      await finalize(
         false,
         closeWarning
           ? `The inference connection was offline; ${closeWarning}.`
@@ -1531,6 +1890,7 @@ function CapturePage() {
     engagement,
     isLectureMode,
     isRtsp,
+    isWorkshopMode,
     proctorFlags.length,
     rosterHint.enrolled,
     rtspSessionId,
@@ -1578,14 +1938,19 @@ function CapturePage() {
   }, [elapsed]);
 
   const ModeIcon = isExamMode ? ShieldAlert : isWorkshopMode ? Presentation : Camera;
+  const modeTone = isExamMode ? "var(--warn)" : isWorkshopMode ? "var(--accent)" : "var(--primary)";
   const transportReady = isRtsp ? rtspStatus === "running" : conn === "LIVE";
   const modeTelemetryReady = isExamMode
-    ? examMode && proctorLive.ready === true
+    ? examMode && proctorLive.ready === true && proctorLive.production === true
     : isWorkshopMode
       ? engagement !== null
       : true;
   const monitoringFailed =
-    !!pipelineError || !!rtspStatusError || (isExamMode && proctorLive.ready === false);
+    !!pipelineError ||
+    !!rtspStatusError ||
+    (isExamMode &&
+      (proctorLive.ready === false ||
+        (proctorLive.ready === true && proctorLive.production !== true)));
   const monitoringReady = running && transportReady && modeTelemetryReady && !monitoringFailed;
   const liveLabel = isExamMode
     ? monitoringFailed
@@ -1621,7 +1986,10 @@ function CapturePage() {
   return (
     <div
       ref={wrapRef}
-      className="app-bg relative flex min-h-dvh w-full flex-col overflow-x-hidden lg:h-screen lg:overflow-hidden"
+      className={cn(
+        "relative flex min-h-dvh w-full flex-col overflow-x-hidden lg:h-screen lg:overflow-hidden",
+        isLectureMode ? "app-bg" : "sp-workspace-bg",
+      )}
     >
       {/* Absentee / Rotating QR Modal — anti-proxy rotating verification */}
       {isLectureMode && absenteeOpen && (
@@ -1631,19 +1999,32 @@ function CapturePage() {
               sessionId={sessionIdRef.current || rtspSessionId || `session-${sessionInfo.section}`}
               apiBase={API_BASE}
               onClose={() => setAbsenteeOpen(false)}
+              onVerified={(sid) => markStudentPresent(sid, "qr")}
             />
           </div>
         </div>
       )}
 
       {/* Top HUD */}
-      <header className="relative z-30 flex min-h-20 shrink-0 flex-wrap items-center gap-3 border-b border-[color:var(--line)] bg-[color:var(--bg)]/85 px-3 py-3 backdrop-blur sm:gap-4 sm:px-5 lg:h-20 lg:flex-nowrap lg:gap-6 lg:px-8 lg:py-0">
+      <header
+        className={cn(
+          "relative z-30 flex min-h-20 shrink-0 flex-wrap items-center gap-3 border-b border-[color:var(--line)] px-3 py-3 sm:gap-4 sm:px-5 lg:h-20 lg:flex-nowrap lg:gap-6 lg:px-8 lg:py-0",
+          isLectureMode ? "bg-[color:var(--bg)]/85 backdrop-blur" : "sp-chrome",
+        )}
+      >
         <div className="flex min-w-0 flex-1 items-baseline gap-3">
           <div
-            className="flex h-9 w-9 items-center justify-center rounded-md border border-[color:var(--line)]"
-            style={{ background: "linear-gradient(135deg, var(--primary-deep), var(--primary))" }}
+            className={cn(
+              "flex h-10 w-10 items-center justify-center rounded-md border border-[color:var(--line)]",
+              !isLectureMode && "bg-[color:var(--surface-2)]",
+            )}
+            style={
+              isLectureMode
+                ? { background: "linear-gradient(135deg, var(--primary-deep), var(--primary))" }
+                : { color: modeTone }
+            }
           >
-            <ModeIcon className="h-4 w-4 text-white" />
+            <ModeIcon className={cn("h-4 w-4", isLectureMode && "text-white")} />
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -1653,7 +2034,8 @@ function CapturePage() {
               <span
                 className={cn(
                   "shrink-0 rounded px-1.5 py-0.5 font-mono-nums text-[11px] uppercase tracking-[0.14em]",
-                  sessionInfo.mode === "exam" && "bg-[color:var(--bad)]/15 text-[color:var(--bad)]",
+                  sessionInfo.mode === "exam" &&
+                    "bg-[color:var(--warn)]/15 text-[color:var(--warn)]",
                   sessionInfo.mode === "workshop" &&
                     "bg-[color:var(--accent)]/15 text-[color:var(--accent)]",
                   sessionInfo.mode === "lecture" &&
@@ -1718,7 +2100,7 @@ function CapturePage() {
               {time}
             </div>
           </div>
-          <ConnectionBadge state={conn} />
+          <ConnectionBadge state={conn} variant={isLectureMode ? "default" : "quiet"} />
           {isLectureMode && (
             <button
               onClick={() => setAbsenteeOpen((v) => !v)}
@@ -1762,14 +2144,32 @@ function CapturePage() {
       <div className="relative flex min-h-0 flex-1 flex-col lg:flex-row">
         {/* Video stage */}
         <div className="relative flex min-h-[52vh] flex-1 flex-col p-3 sm:min-h-[60vh] sm:p-4 lg:min-h-0 lg:p-6">
-          <div className="relative flex-1 overflow-hidden rounded-[14px] border border-[color:var(--line)] bg-black shadow-[var(--shadow-cobalt)]">
+          <div
+            className={cn(
+              "relative flex-1 overflow-hidden rounded-[14px] border border-[color:var(--line)] bg-black",
+              isLectureMode ? "shadow-[var(--shadow-cobalt)]" : "shadow-[var(--shadow-2)]",
+            )}
+          >
             {isRtsp ? (
               <div className="absolute inset-0 h-full w-full overflow-hidden bg-black">
-                <img
-                  src={`${API_BASE}/v1/rtsp/feed${feedToken ? `?token=${encodeURIComponent(feedToken)}` : ""}`}
-                  alt="RTSP Camera Feed"
-                  className="h-full w-full object-contain"
-                />
+                {feedToken ? (
+                  <img
+                    src={`${API_BASE}/v1/rtsp/feed?token=${encodeURIComponent(feedToken)}`}
+                    alt="RTSP Camera Feed"
+                    className="h-full w-full object-contain"
+                    onLoad={() => {
+                      feedRefreshAttemptedRef.current = false;
+                    }}
+                    onError={() => void refreshFeedToken()}
+                  />
+                ) : (
+                  <div
+                    role="status"
+                    className="flex h-full items-center justify-center font-mono-nums text-xs text-white/65"
+                  >
+                    Preparing secure camera feed…
+                  </div>
+                )}
                 <div className="absolute top-4 left-4 z-10 flex items-center gap-2 rounded-md border border-[color:var(--accent)]/40 bg-black/60 px-3 py-1.5 backdrop-blur-md">
                   <span className="relative flex h-2 w-2">
                     <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[color:var(--accent)] opacity-75" />
@@ -1798,7 +2198,7 @@ function CapturePage() {
             />
 
             {/* Scan line while running */}
-            {running && (
+            {isLectureMode && running && (
               <div className="pointer-events-none absolute inset-0 overflow-hidden">
                 <div
                   className="absolute left-0 right-0 h-[2px]"
@@ -1910,7 +2310,10 @@ function CapturePage() {
         {/* Right rail: PRESENT NOW */}
         <aside
           className={cn(
-            "relative flex w-full shrink-0 flex-col border-t border-[color:var(--line)] bg-[color:var(--surface)]/70 backdrop-blur transition-opacity lg:w-[360px] lg:border-t-0 lg:border-l",
+            "relative flex w-full shrink-0 flex-col border-t border-[color:var(--line)] transition-opacity lg:border-t-0 lg:border-l",
+            isLectureMode
+              ? "bg-[color:var(--surface)]/70 backdrop-blur lg:w-[360px]"
+              : "bg-[color:var(--surface)] lg:w-[380px]",
             stale && "opacity-95",
           )}
         >
@@ -2086,7 +2489,12 @@ function CapturePage() {
                                 </div>
                               </div>
                               <div className="flex flex-col items-end gap-1">
-                                {p.isLive ? (
+                                {p.via === "qr" ? (
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-[color:var(--accent)]/15 border border-[color:var(--accent)]/30 px-2 py-0.5 font-mono-nums text-[9.5px] uppercase tracking-[0.14em] text-[color:var(--accent)] font-semibold">
+                                    <QrCode className="h-2.5 w-2.5" />
+                                    Via QR
+                                  </span>
+                                ) : p.isLive ? (
                                   <span className="inline-flex items-center gap-1 rounded-full bg-[color:var(--ok)]/15 px-2 py-0.5 font-mono-nums text-[9.5px] uppercase tracking-[0.14em] text-[color:var(--ok)] font-semibold">
                                     <span className="h-1.5 w-1.5 rounded-full bg-[color:var(--ok)] animate-pulse" />
                                     In View
@@ -2186,7 +2594,7 @@ function CapturePage() {
             <ExamCaptureRail
               candidates={sessionRoster}
               flags={proctorFlags}
-              inFrame={present.length}
+              inFrame={visibleFaces}
               proctor={proctorLive}
               rosterTotal={rosterHint.enrolled}
               running={running}
@@ -2199,7 +2607,7 @@ function CapturePage() {
           {isWorkshopMode && (
             <WorkshopCaptureRail
               engagement={engagement}
-              fallbackVisible={present.length}
+              fallbackVisible={visibleFaces}
               running={running}
               monitoringReady={monitoringReady}
               rtspStatus={rtspStatus}
@@ -2216,7 +2624,12 @@ function CapturePage() {
               animate={{ x: 0, opacity: 1 }}
               exit={{ x: 20, opacity: 0 }}
               transition={{ duration: 0.2, ease: "easeOut" }}
-              className="fixed inset-x-3 top-32 z-40 max-h-[calc(100dvh-9rem)] overflow-y-auto glass-panel p-5 sm:left-auto sm:right-6 sm:top-24 sm:w-[380px]"
+              className={cn(
+                "fixed inset-x-3 top-32 z-40 max-h-[calc(100dvh-9rem)] overflow-y-auto p-5 sm:left-auto sm:right-6 sm:top-24 sm:w-[380px]",
+                isLectureMode ? "glass-panel" : "sp-surface",
+              )}
+              role="dialog"
+              aria-label="Capture settings"
             >
               <div className="flex items-center justify-between">
                 <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--muted)]">
@@ -2224,10 +2637,10 @@ function CapturePage() {
                 </div>
                 <button
                   onClick={() => setSettingsOpen(false)}
-                  className="text-[color:var(--muted)] hover:text-[color:var(--ink)]"
+                  className="sp-icon-button -mr-2 -mt-2"
                   aria-label="Close settings"
                 >
-                  <X className="h-4 w-4" />
+                  <X className="h-5 w-5" />
                 </button>
               </div>
               <div className="mt-4 space-y-4">
@@ -2287,12 +2700,22 @@ function CapturePage() {
       </div>
 
       {/* Disclosure line */}
-      <div className="border-t border-[color:var(--line)] bg-[color:var(--surface)]/60 px-4 py-2 text-center font-mono-nums text-[11px] tracking-wider text-[color:var(--muted)] sm:px-8">
+      <div
+        className={cn(
+          "border-t border-[color:var(--line)] px-4 py-2 text-center font-mono-nums text-[11px] tracking-wider text-[color:var(--muted)] sm:px-8",
+          isLectureMode ? "bg-[color:var(--surface)]/60" : "bg-[color:var(--surface)]",
+        )}
+      >
         {disclosure}
       </div>
 
       {/* Bottom bar */}
-      <footer className="flex min-h-24 shrink-0 flex-col items-stretch justify-between gap-3 border-t border-[color:var(--line)] bg-[color:var(--bg)]/85 px-4 py-4 backdrop-blur sm:flex-row sm:items-center sm:px-8">
+      <footer
+        className={cn(
+          "flex min-h-24 shrink-0 flex-col items-stretch justify-between gap-3 border-t border-[color:var(--line)] px-4 py-4 sm:flex-row sm:items-center sm:px-8",
+          isLectureMode ? "bg-[color:var(--bg)]/85 backdrop-blur" : "sp-chrome",
+        )}
+      >
         <div className="font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--muted)]">
           {running
             ? isExamMode
@@ -2306,7 +2729,12 @@ function CapturePage() {
           {!running ? (
             <button
               onClick={start}
-              className="flex h-14 w-full items-center justify-center gap-3 rounded-md bg-[color:var(--primary)] px-8 text-base font-semibold tracking-wide text-white transition-colors hover:bg-[color:var(--primary-deep)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)] sm:w-auto"
+              className={cn(
+                "flex h-14 w-full items-center justify-center gap-3 rounded-md px-8 text-base font-semibold tracking-wide text-white transition-colors focus-visible:outline-none focus-visible:ring-2 sm:w-auto",
+                isLectureMode
+                  ? "bg-[color:var(--primary)] hover:bg-[color:var(--primary-deep)] focus-visible:ring-[color:var(--accent)]"
+                  : "bg-[color:var(--primary-deep)] hover:bg-[color:var(--primary)] focus-visible:ring-[color:var(--primary)]",
+              )}
             >
               <Play className="h-5 w-5" fill="currentColor" />
               {startLabel}
@@ -2317,9 +2745,9 @@ function CapturePage() {
               className={cn(
                 "flex h-14 w-full items-center justify-center gap-3 rounded-md px-8 text-base font-semibold tracking-wide text-white transition-colors hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 sm:w-auto",
                 isExamMode
-                  ? "bg-[color:var(--bad)] focus-visible:ring-[color:var(--bad)]"
+                  ? "bg-[color:var(--primary-deep)] focus-visible:ring-[color:var(--primary)]"
                   : isWorkshopMode
-                    ? "bg-[color:var(--accent)] focus-visible:ring-[color:var(--accent)]"
+                    ? "bg-[color:var(--primary-deep)] focus-visible:ring-[color:var(--primary)]"
                     : "bg-[color:var(--ok)] focus-visible:ring-[color:var(--ok)]",
               )}
             >
@@ -2350,7 +2778,13 @@ function CapturePage() {
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.96 }}
               transition={{ duration: 0.22, ease: "easeOut" }}
-              className="glass-panel w-[min(92vw,460px)] p-8 text-center"
+              className={cn(
+                "w-[min(92vw,460px)] p-8 text-center",
+                isLectureMode ? "glass-panel" : "sp-surface",
+              )}
+              role="dialog"
+              aria-modal="true"
+              aria-label="Session close summary"
             >
               <div
                 className={cn(
@@ -2381,22 +2815,15 @@ function CapturePage() {
               </div>
               {isExamMode ? (
                 <div className="mt-6 grid grid-cols-2 gap-3">
-                  <SummaryMetric label="Candidates observed" value={savedSummary.candidates} />
+                  <SummaryMetric label="Candidates identified" value={savedSummary.candidates} />
                   <SummaryMetric label="Review events" value={savedSummary.flags} />
                 </div>
               ) : isWorkshopMode ? (
                 <div className="mt-6 grid grid-cols-2 gap-3">
+                  <SummaryMetric label="Retained windows" value={savedSummary.retainedWindows} />
                   <SummaryMetric
-                    label="Class VNEI"
-                    value={
-                      savedSummary.engagement?.vnei == null
-                        ? "Withheld"
-                        : `${Math.round(savedSummary.engagement.vnei * 100)}%`
-                    }
-                  />
-                  <SummaryMetric
-                    label="Visible at close"
-                    value={savedSummary.engagement?.visible ?? 0}
+                    label="Final window"
+                    value={workshopWindowLabel(savedSummary.engagementWindow)}
                   />
                 </div>
               ) : (
@@ -2415,9 +2842,10 @@ function CapturePage() {
                   : isExamMode
                     ? "Candidate events are available in the teacher review queue. No event is an automatic verdict."
                     : isWorkshopMode
-                      ? savedSummary.engagement?.suppressed
-                        ? "No class engagement value was retained because the privacy threshold was not met."
-                        : "Workshop session closed. Session history remains the source of truth for retained aggregate windows."
+                      ? workshopWindowMessage(
+                          savedSummary.engagementWindow,
+                          savedSummary.retainedWindows,
+                        )
                       : "Records written to the session history. Absent students are everyone not marked present."}
               </p>
               <div className="mt-7 flex items-center justify-center gap-3">
@@ -2427,13 +2855,13 @@ function CapturePage() {
                 >
                   View sessions
                 </Link>
-                <button
-                  onClick={() => setSavedSummary(null)}
+                <Link
+                  to="/start"
                   className="flex h-12 items-center gap-2 rounded-md bg-[color:var(--primary)] px-6 text-sm font-semibold text-white transition-colors hover:bg-[color:var(--primary-deep)]"
                 >
                   <Play className="h-4 w-4" fill="currentColor" />
                   New session
-                </button>
+                </Link>
               </div>
             </motion.div>
           </motion.div>
@@ -2476,41 +2904,44 @@ function ExamCaptureRail({
   const phoneEvents = flags.filter((flag) => flag.type === "phone").length;
   const personEvents = flags.filter((flag) => flag.type === "extra_person").length;
   const poseEvents = flags.filter((flag) => flag.type === "head_pose").length;
-  const unavailable = proctor.ready === false;
+  const detectorUnavailable = proctor.ready === false;
+  const testDetector = proctor.ready === true && proctor.production !== true;
   const sustainedPoseCount = proctor.poses.filter((pose) => pose.state === "sustained_away").length;
   const awayPoseCount = proctor.poses.filter(
     (pose) => pose.state === "away" || pose.state === "sustained_away",
   ).length;
-  const statusLabel = unavailable
+  const statusLabel = detectorUnavailable
     ? "Proctor unavailable"
-    : proctor.phone
-      ? "Device visible"
-      : sustainedPoseCount > 0
-        ? "Sustained turn observed"
-        : awayPoseCount > 0
-          ? "Head turn observed"
-          : monitoringReady && (telemetrySeen || proctor.ready === true)
-            ? "Monitoring"
-            : running
-              ? "Waiting for telemetry"
-              : "Ready to start";
+    : testDetector
+      ? "Production detector required"
+      : proctor.phone
+        ? "Device visible"
+        : sustainedPoseCount > 0
+          ? "Sustained turn observed"
+          : awayPoseCount > 0
+            ? "Head turn observed"
+            : monitoringReady && (telemetrySeen || proctor.ready === true)
+              ? "Monitoring"
+              : running
+                ? "Waiting for telemetry"
+                : "Ready to start";
 
   return (
     <>
       <div className="relative z-10 border-b border-[color:var(--line)] px-5 py-5">
         <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--muted)]">
-            <ShieldAlert className="h-4 w-4 text-[color:var(--bad)]" /> Exam monitor
+          <div className="flex items-center gap-2 font-mono-nums text-xs uppercase tracking-[0.16em] text-[color:var(--muted)]">
+            <ShieldAlert className="h-4 w-4 text-[color:var(--warn)]" /> Exam monitor
           </div>
           {monitoringReady && <span className="pulse-dot" />}
         </div>
         <div className="mt-4 grid grid-cols-3 gap-3">
           <RailMetric label="In frame" value={inFrame} suffix={`/ ${rosterTotal ?? "—"}`} />
-          <RailMetric label="Observed" value={candidates.length} />
+          <RailMetric label="Identified" value={candidates.length} />
           <RailMetric
             label="Review events"
             value={flags.length}
-            tone={flags.length ? "bad" : "muted"}
+            tone={flags.length ? "warn" : "muted"}
           />
         </div>
       </div>
@@ -2518,13 +2949,15 @@ function ExamCaptureRail({
       <div
         className={cn(
           "relative z-10 border-b border-[color:var(--line)] px-5 py-4",
-          unavailable
+          detectorUnavailable
             ? "bg-[color:var(--bad)]/10"
-            : proctor.phone
-              ? "bg-[color:var(--bad)]/10"
-              : awayPoseCount > 0
+            : testDetector
+              ? "bg-[color:var(--warn)]/10"
+              : proctor.phone
                 ? "bg-[color:var(--warn)]/10"
-                : "bg-[color:var(--surface-2)]/45",
+                : awayPoseCount > 0
+                  ? "bg-[color:var(--warn)]/10"
+                  : "bg-[color:var(--surface-2)]/45",
         )}
         role="status"
         aria-live="polite"
@@ -2533,27 +2966,37 @@ function ExamCaptureRail({
           <span
             className={cn(
               "font-mono-nums text-[11px] font-semibold uppercase tracking-[0.18em]",
-              unavailable || proctor.phone
+              detectorUnavailable
                 ? "text-[color:var(--bad)]"
-                : awayPoseCount > 0
+                : testDetector
                   ? "text-[color:var(--warn)]"
-                  : monitoringReady
-                    ? "text-[color:var(--ok)]"
-                    : running
+                  : proctor.phone
+                    ? "text-[color:var(--warn)]"
+                    : awayPoseCount > 0
                       ? "text-[color:var(--warn)]"
-                      : "text-[color:var(--muted)]",
+                      : monitoringReady
+                        ? "text-[color:var(--ok)]"
+                        : running
+                          ? "text-[color:var(--warn)]"
+                          : "text-[color:var(--muted)]",
             )}
           >
             {statusLabel}
           </span>
           <span className="font-mono-nums text-[10px] uppercase tracking-wider text-[color:var(--muted)]">
             {proctor.backend ?? rtspStatus ?? "proctor"}
+            {testDetector ? " Â· test" : ""}
           </span>
         </div>
-        {unavailable ? (
+        {detectorUnavailable ? (
           <p className="mt-2 text-xs leading-relaxed text-[color:var(--muted)]">
             The proctor detector did not initialise. Camera identity can continue, but no exam event
             will be treated as monitored until the backend is ready.
+          </p>
+        ) : testDetector ? (
+          <p className="mt-2 text-xs leading-relaxed text-[color:var(--muted)]">
+            This deployment is using a test or unverified object detector. Configure and verify the
+            production YOLO backend before monitoring an examination.
           </p>
         ) : proctor.phone ? (
           <p className="mt-2 text-xs text-[color:var(--ink)]">
@@ -2586,7 +3029,7 @@ function ExamCaptureRail({
         </div>
 
         <div className="mt-5">
-          <div className="font-mono-nums text-[10px] uppercase tracking-[0.2em] text-[color:var(--muted)]">
+          <div className="font-mono-nums text-xs uppercase tracking-[0.16em] text-[color:var(--muted)]">
             Event timeline
           </div>
           {flags.length === 0 ? (
@@ -2620,11 +3063,13 @@ function ExamCaptureRail({
         </div>
 
         <div className="mt-5">
-          <div className="font-mono-nums text-[10px] uppercase tracking-[0.2em] text-[color:var(--muted)]">
-            Candidates observed
+          <div className="font-mono-nums text-xs uppercase tracking-[0.16em] text-[color:var(--muted)]">
+            Candidates identified
           </div>
           {candidates.length === 0 ? (
-            <p className="mt-2 text-xs text-[color:var(--muted)]">No candidates identified yet.</p>
+            <p className="mt-2 text-xs text-[color:var(--muted)]">
+              No candidate identities matched yet.
+            </p>
           ) : (
             <ul className="mt-2 space-y-1.5">
               {candidates
@@ -2705,7 +3150,9 @@ function WorkshopCaptureRail({
           : "No closed windows"
         : lastWindowState === "withheld"
           ? `${completedWindows} closed · latest withheld`
-          : `${completedWindows} window${completedWindows === 1 ? "" : "s"} reported`
+          : lastWindowState === "reported"
+            ? `${completedWindows} closed · latest reported`
+            : `${completedWindows} closed`
       : typeof persisted === "number"
         ? `${persisted} window${persisted === 1 ? "" : "s"} reported`
         : persisted === true
@@ -2718,7 +3165,7 @@ function WorkshopCaptureRail({
     <>
       <div className="relative z-10 border-b border-[color:var(--line)] px-5 py-5">
         <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 font-mono-nums text-[11px] uppercase tracking-[0.2em] text-[color:var(--muted)]">
+          <div className="flex items-center gap-2 font-mono-nums text-xs uppercase tracking-[0.16em] text-[color:var(--muted)]">
             <Presentation className="h-4 w-4 text-[color:var(--accent)]" /> Workshop engagement
           </div>
           {monitoringReady && <span className="pulse-dot" />}
@@ -2737,7 +3184,7 @@ function WorkshopCaptureRail({
 
       <div className="relative z-10 border-b border-[color:var(--line)] bg-[color:var(--surface-2)]/45 px-5 py-4">
         <div className="flex items-center justify-between gap-3">
-          <span className="font-mono-nums text-[10px] uppercase tracking-[0.2em] text-[color:var(--muted)]">
+          <span className="font-mono-nums text-xs uppercase tracking-[0.16em] text-[color:var(--muted)]">
             Reportability threshold
           </span>
           <span className="font-mono-nums text-xs text-[color:var(--ink)]">
@@ -2790,10 +3237,10 @@ function WorkshopCaptureRail({
 
         <div className="mt-4 rounded-md border border-[color:var(--line)] bg-[color:var(--surface-2)]/45 p-4">
           <div className="flex items-center justify-between gap-3">
-            <span className="font-mono-nums text-[10px] uppercase tracking-[0.18em] text-[color:var(--muted)]">
+            <span className="font-mono-nums text-xs uppercase tracking-[0.14em] text-[color:var(--muted)]">
               Aggregate window
             </span>
-            <span className="font-mono-nums text-[10px] text-[color:var(--ink)]">
+            <span className="font-mono-nums text-xs text-[color:var(--ink)]">
               {windowSeconds
                 ? `${windowSeconds}s${windowStatus?.state ? ` · ${windowStatus.state}` : ""}`
                 : "Waiting"}
@@ -2812,13 +3259,13 @@ function WorkshopCaptureRail({
             </span>
           </div>
           {(rtspStatus || rtspError) && (
-            <div className="mt-3 border-t border-[color:var(--line)] pt-3 font-mono-nums text-[10px] text-[color:var(--muted)]">
+            <div className="mt-3 border-t border-[color:var(--line)] pt-3 font-mono-nums text-xs text-[color:var(--muted)]">
               {rtspError ? `Status unavailable · ${rtspError}` : `RTSP · ${rtspStatus}`}
             </div>
           )}
         </div>
 
-        <p className="mt-4 font-mono-nums text-[10px] leading-relaxed text-[color:var(--muted)]">
+        <p className="mt-4 font-mono-nums text-xs leading-relaxed text-[color:var(--muted)]">
           Signals are counted only at class level. Names and individual engagement values are not
           shown or stored in this workspace.
         </p>
@@ -2836,11 +3283,11 @@ function RailMetric({
   label: string;
   value: string | number;
   suffix?: string;
-  tone?: "muted" | "accent" | "bad";
+  tone?: "muted" | "accent" | "warn" | "bad";
 }) {
   return (
     <div className="min-w-0">
-      <div className="truncate font-mono-nums text-[9px] uppercase tracking-[0.14em] text-[color:var(--muted)]">
+      <div className="truncate font-mono-nums text-xs uppercase tracking-[0.12em] text-[color:var(--muted)]">
         {label}
       </div>
       <div
@@ -2848,14 +3295,16 @@ function RailMetric({
           "mt-1 flex items-baseline gap-1 font-display text-2xl font-extrabold leading-none",
           tone === "bad"
             ? "text-[color:var(--bad)]"
-            : tone === "accent"
-              ? "text-[color:var(--accent)]"
-              : "text-[color:var(--ink)]",
+            : tone === "warn"
+              ? "text-[color:var(--warn)]"
+              : tone === "accent"
+                ? "text-[color:var(--accent)]"
+                : "text-[color:var(--ink)]",
         )}
       >
         {typeof value === "number" ? value.toString().padStart(2, "0") : value}
         {suffix && (
-          <span className="font-mono-nums text-[10px] text-[color:var(--muted)]">{suffix}</span>
+          <span className="font-mono-nums text-xs text-[color:var(--muted)]">{suffix}</span>
         )}
       </div>
     </div>
@@ -2874,12 +3323,12 @@ function EventCount({
   return (
     <div className="rounded-md border border-[color:var(--line)] bg-[color:var(--surface-2)]/45 p-3">
       <Icon
-        className={cn("h-4 w-4", value ? "text-[color:var(--bad)]" : "text-[color:var(--muted)]")}
+        className={cn("h-4 w-4", value ? "text-[color:var(--warn)]" : "text-[color:var(--muted)]")}
       />
       <div className="mt-2 font-display text-xl font-extrabold text-[color:var(--ink)]">
         {value}
       </div>
-      <div className="mt-0.5 truncate font-mono-nums text-[9px] uppercase tracking-wider text-[color:var(--muted)]">
+      <div className="mt-0.5 truncate font-mono-nums text-xs uppercase tracking-wider text-[color:var(--muted)]">
         {label}
       </div>
     </div>
@@ -2903,7 +3352,7 @@ function SignalCard({
           {value}
         </span>
       </div>
-      <div className="mt-2 font-mono-nums text-[10px] uppercase tracking-[0.16em] text-[color:var(--muted)]">
+      <div className="mt-2 font-mono-nums text-xs uppercase tracking-[0.14em] text-[color:var(--muted)]">
         {label}
       </div>
     </div>
@@ -2914,7 +3363,7 @@ function SummaryMetric({ label, value }: { label: string; value: string | number
   return (
     <div className="rounded-md border border-[color:var(--line)] bg-[color:var(--surface-2)]/60 p-4">
       <div className="font-display text-3xl font-extrabold text-[color:var(--ink)]">{value}</div>
-      <div className="mt-1 font-mono-nums text-[10px] uppercase tracking-[0.16em] text-[color:var(--muted)]">
+      <div className="mt-1 font-mono-nums text-xs uppercase tracking-[0.14em] text-[color:var(--muted)]">
         {label}
       </div>
     </div>
@@ -2923,6 +3372,7 @@ function SummaryMetric({ label, value }: { label: string; value: string | number
 
 function IdleState({ mode, cameraBlocked }: { mode: SessionMode; cameraBlocked: string | null }) {
   const Icon = mode === "exam" ? ShieldAlert : mode === "workshop" ? Presentation : Camera;
+  const tone = mode === "exam" ? "var(--warn)" : mode === "workshop" ? "var(--accent)" : undefined;
   const title =
     mode === "exam"
       ? "Exam monitoring ready"
@@ -2936,14 +3386,33 @@ function IdleState({ mode, cameraBlocked }: { mode: SessionMode; cameraBlocked: 
         ? "Start workshop engagement"
         : "Start session";
   return (
-    <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-gradient-to-b from-black/40 via-black/20 to-black/40">
+    <div
+      className={cn(
+        "absolute inset-0 flex flex-col items-center justify-center gap-4",
+        mode === "lecture"
+          ? "bg-gradient-to-b from-black/40 via-black/20 to-black/40"
+          : "bg-black/55",
+      )}
+    >
       <div
-        className="flex h-16 w-16 items-center justify-center rounded-full border border-[color:var(--line)]"
-        style={{ background: "linear-gradient(135deg, var(--surface-2), var(--surface))" }}
+        className={cn(
+          "flex h-16 w-16 items-center justify-center rounded-md border",
+          mode === "lecture" ? "border-[color:var(--line)]" : "border-white/20 bg-black/40",
+        )}
+        style={
+          mode === "lecture"
+            ? { background: "linear-gradient(135deg, var(--surface-2), var(--surface))" }
+            : { color: tone }
+        }
       >
-        <Icon className="h-7 w-7 text-[color:var(--muted)]" />
+        <Icon className={cn("h-7 w-7", mode === "lecture" && "text-[color:var(--muted)]")} />
       </div>
-      <div className="font-display text-3xl font-extrabold tracking-tight text-[color:var(--ink)]">
+      <div
+        className={cn(
+          "font-display text-3xl font-extrabold tracking-tight",
+          mode === "lecture" ? "text-[color:var(--ink)]" : "text-white",
+        )}
+      >
         {title}
       </div>
       {/* Say the camera can't open HERE, before the operator presses Start and
@@ -2956,9 +3425,22 @@ function IdleState({ mode, cameraBlocked }: { mode: SessionMode; cameraBlocked: 
           <p className="mt-1.5 text-sm text-[color:var(--ink)]">{cameraBlocked}</p>
         </div>
       ) : (
-        <div className="max-w-md text-center text-sm text-[color:var(--muted)]">
-          Press <span className="font-mono-nums text-[color:var(--ink)]">{action}</span> to open the
-          camera and connect the inference service.
+        <div
+          className={cn(
+            "max-w-md text-center text-sm",
+            mode === "lecture" ? "text-[color:var(--muted)]" : "text-white/70",
+          )}
+        >
+          Press{" "}
+          <span
+            className={cn(
+              "font-mono-nums",
+              mode === "lecture" ? "text-[color:var(--ink)]" : "text-white",
+            )}
+          >
+            {action}
+          </span>{" "}
+          to open the camera and connect the inference service.
         </div>
       )}
       {/* Mode came from the URL (the /start wizard) or defaulted to lecture if

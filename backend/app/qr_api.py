@@ -37,8 +37,6 @@ from vision.embedding_store import EmbeddingStore
 logger = logging.getLogger("sensepro.qr_api")
 router = APIRouter(prefix="/v1/qr", tags=["qr"])
 
-QR_TOKEN_TTL_S = 75  # tokens rotate before this; single-use regardless
-QR_WINDOW_TTL_S = 30  # seconds to reach the camera after a claim
 CLAIM_RATE_MAX = 6  # token claims per user per window (in-memory, per-process)
 CLAIM_RATE_WINDOW_S = 60
 # Selfie retries get their OWN, larger budget. Claim and verify used to share
@@ -49,7 +47,9 @@ CLAIM_RATE_WINDOW_S = 60
 # ever satisfy a window they already hold.
 VERIFY_RATE_MAX = 20
 VERIFY_RATE_WINDOW_S = 60
-MAX_SELFIE_BYTES = 4 * 1024 * 1024  # one downscaled still frame — not a video
+# A 480px JPEG at quality 0.7 is ~40 KB; 512 KB keeps everything inside
+# Starlette's in-memory SpooledTemporaryFile buffer (rollover at 1 MB).
+MAX_SELFIE_BYTES = 512 * 1024
 
 _claim_hits: dict[str, deque] = defaultdict(deque)
 _prober = None  # lazily-built enrolment embedder, reused across verify calls
@@ -127,6 +127,7 @@ class ClaimBody(BaseModel):
 def issue_token(body: SessionBody, authorization: str | None = Header(None)) -> dict:
     """Teacher/admin: mint (or rotate) the live token for a session's window."""
     _require_role(authorization, {"teacher", "admin"})
+    ttl = settings.qr_claim_ttl_s
     writer = _writer()
     try:
         setting = writer.get_setting("qr_checkin_enabled")
@@ -136,9 +137,11 @@ def issue_token(body: SessionBody, authorization: str | None = Header(None)) -> 
         if session is None:
             raise HTTPException(409, "Session is not active")
         _require_qr_mode(session)
-        tok = writer.issue_qr_token(body.session_id, QR_TOKEN_TTL_S)
+        tok = writer.issue_qr_token(body.session_id, ttl)
+        cid = tok["token"][:8]
+        logger.info("qr_cid=%s stage=issue session=%s ttl_s=%d", cid, body.session_id, ttl)
         writer.append_audit("api:teacher", "qr_window_open", {"session_id": body.session_id})
-        return {**tok, "ttl_s": QR_TOKEN_TTL_S}
+        return {**tok, "ttl_s": ttl}
     finally:
         writer.close()
 
@@ -160,8 +163,10 @@ def close_window(body: SessionBody, authorization: str | None = Header(None)) ->
 def claim(body: ClaimBody, authorization: str | None = Header(None)) -> dict:
     """Student: claim the current token from their authenticated session. Opens
     a verification window; does NOT mark presence (the camera does that)."""
+    t0 = time.monotonic()
     auth_uid = _verify_user(authorization)
     _rate_limit(auth_uid)
+    window_s = settings.qr_verify_window_s
     writer = _writer()
     try:
         student = writer.student_by_auth_uid(auth_uid)
@@ -180,9 +185,38 @@ def claim(body: ClaimBody, authorization: str | None = Header(None)) -> dict:
         if writer.has_open_present(session["id"], student["id"]):
             raise HTTPException(409, "You are already marked present.")
 
-        win = writer.claim_qr_token(body.token, student["id"], QR_WINDOW_TTL_S)
+        # One verification attempt per student per session — a second window
+        # for the same student means the first expired or was satisfied. Either
+        # way, a repeat is suspicious or unnecessary.
+        if writer.has_verification_attempt(session["id"], student["id"]):
+            raise HTTPException(409, "You've already verified for this session.")
+
+        win = writer.claim_qr_token(body.token, student["id"], window_s)
         if win is None:
             raise HTTPException(409, "This code was already used — ask for a new one.")
+
+        # Correlation: token_id[:8] links issue → claim → verify → presence.
+        cid = body.token[:8] if len(body.token) >= 8 else body.token
+        # Timing signal: how long between token issue and claim. A claim near
+        # the TTL deadline is weak evidence of a relay (photographed and
+        # forwarded). Logged for teacher review, never auto-penalised.
+        token_age_s = 0.0
+        if tok.get("issued_at"):
+            try:
+                issued = _parse_ts(tok["issued_at"])
+                token_age_s = round((datetime.now(timezone.utc) - issued).total_seconds(), 1)
+            except Exception:  # noqa: BLE001
+                pass
+        latency_ms = round((time.monotonic() - t0) * 1000)
+        logger.info(
+            "qr_cid=%s stage=claim student=%s session=%s token_age_s=%.1f latency_ms=%d window_s=%d",
+            cid,
+            student["id"],
+            session["id"],
+            token_age_s,
+            latency_ms,
+            window_s,
+        )
 
         writer.append_audit(
             "api:student",
@@ -196,12 +230,17 @@ def claim(body: ClaimBody, authorization: str | None = Header(None)) -> dict:
         return {
             "window_id": win["window_id"],
             "expires_at": win["expires_at"],
-            "seconds": QR_WINDOW_TTL_S,
+            "seconds": window_s,
             "message": (
                 "Verify with a quick selfie — you have "
-                f"{QR_WINDOW_TTL_S} seconds. Face the camera in good light."
+                f"{window_s} seconds. Face the camera in good light."
             ),
         }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Unexpected error in /v1/qr/claim: %s", exc)
+        raise HTTPException(500, f"Claim failed: {exc}") from exc
     finally:
         writer.close()
 
@@ -233,6 +272,7 @@ async def verify(
 
 
 def _verify_sync(window_id: str, data: bytes, authorization: str | None) -> dict:
+    t0 = time.monotonic()
     auth_uid = _verify_user(authorization)
     _rate_limit(
         auth_uid,
@@ -265,11 +305,13 @@ def _verify_sync(window_id: str, data: bytes, authorization: str | None) -> dict
             raise HTTPException(
                 400, f"Image too large: {len(data)} bytes (max {MAX_SELFIE_BYTES})."
             )
+        t_decode = time.monotonic()
         img = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
         del data
         if img is None:
             raise HTTPException(400, "Could not read the image — retake the selfie.")
 
+        t_detect = time.monotonic()
         probe = _embed_probe(img)
         del img
         if probe is None:
@@ -277,12 +319,31 @@ def _verify_sync(window_id: str, data: bytes, authorization: str | None) -> dict
                 422, "No clear face detected — face the camera in better light and retry."
             )
 
+        t_match = time.monotonic()
         rows = writer.student_templates(student["id"])
         if not rows:
             raise HTTPException(422, "No enrolment on file for you — see the admin to enrol first.")
-        store = EmbeddingStore.from_rows(rows, threshold=settings.cosine_threshold)
+        # Use the stricter QR verification threshold for the selfie 1:1 match.
+        threshold = settings.qr_verify_threshold or settings.cosine_threshold
+        store = EmbeddingStore.from_rows(rows, threshold=threshold)
         sid, score = store.match(np.asarray(probe, dtype=np.float32))
         score = round(float(score), 4)
+        t_done = time.monotonic()
+
+        # Correlation log: decode, detect+embed, match timing in ms.
+        cid = window_id[:8]
+        logger.info(
+            "qr_cid=%s stage=verify student=%s decode_ms=%d detect_embed_ms=%d match_ms=%d "
+            "score=%.4f verdict=%s threshold=%.2f",
+            cid,
+            student["id"],
+            round((t_detect - t_decode) * 1000),
+            round((t_match - t_detect) * 1000),
+            round((t_done - t_match) * 1000),
+            score,
+            "pass" if sid else "fail",
+            threshold,
+        )
 
         # A negative match is a normal outcome, not an error: let the phone retry
         # within the window. Nothing is written.
@@ -296,7 +357,17 @@ def _verify_sync(window_id: str, data: bytes, authorization: str | None) -> dict
         # Atomic single-winner: the camera path may also be satisfying this window.
         if not writer.satisfy_window(window_id):
             raise HTTPException(409, "You are already verified for this window.")
+        t_write = time.monotonic()
         writer.write_qr_presence(win["session_id"], student["id"], datetime.now(timezone.utc))
+        write_ms = round((time.monotonic() - t_write) * 1000)
+        logger.info(
+            "qr_cid=%s stage=presence_write student=%s session=%s via=qr write_ms=%d total_ms=%d",
+            cid,
+            student["id"],
+            win["session_id"],
+            write_ms,
+            round((time.monotonic() - t0) * 1000),
+        )
         writer.append_audit(
             "api:student",
             "qr_verified",
